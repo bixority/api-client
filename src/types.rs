@@ -261,9 +261,7 @@ impl HttpResponse {
     /// or fails to deserialize into `T`.
     pub async fn json<T: DeserializeOwned>(self) -> Result<T, APIClientError> {
         let mut guard = self.inner.lock().await;
-        let resp = guard
-            .take()
-            .ok_or(APIClientError::ConcurrencyClosed)?;
+        let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
         drop(guard);
         resp.json::<T>().await.map_err(APIClientError::from)
     }
@@ -276,9 +274,7 @@ impl HttpResponse {
     /// or is not valid UTF-8.
     pub async fn text(self) -> Result<String, APIClientError> {
         let mut guard = self.inner.lock().await;
-        let resp = guard
-            .take()
-            .ok_or(APIClientError::ConcurrencyClosed)?;
+        let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
         drop(guard);
         resp.text().await.map_err(APIClientError::from)
     }

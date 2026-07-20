@@ -1,4 +1,4 @@
-use crate::{Method, StatusCode, Headers};
+use crate::{Headers, Method, StatusCode};
 use std::str::FromStr;
 
 #[test]
@@ -45,6 +45,12 @@ fn test_headers_builder() {
         .authorization_bearer("token123");
 
     assert_eq!(headers.get("x-test"), Some("Value".to_string()));
-    assert_eq!(headers.get("content-type"), Some("application/json".to_string()));
-    assert_eq!(headers.get("authorization"), Some("Bearer token123".to_string()));
+    assert_eq!(
+        headers.get("content-type"),
+        Some("application/json".to_string())
+    );
+    assert_eq!(
+        headers.get("authorization"),
+        Some("Bearer token123".to_string())
+    );
 }

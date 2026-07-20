@@ -1,4 +1,4 @@
-use crate::audit::{shell_quote, pretty_body};
+use crate::audit::{pretty_body, shell_quote};
 
 #[test]
 fn test_shell_quote() {
