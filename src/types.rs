@@ -313,8 +313,9 @@ impl HttpResponse {
                 let body_str = String::from_utf8_lossy(&body);
                 let result = json_module.call_method1("loads", (body_str.as_ref(),))?;
                 Ok(result.unbind())
-            })
-            .expect("Python GIL should be available")
+            }).ok_or_else(|| {
+                APIClientError::UnsupportedMethod("Failed to attach Python".to_string())
+            })?
         })
     }
 
@@ -357,6 +358,9 @@ pub enum APIClientError {
 
     #[error("unsupported HTTP method: {0}")]
     UnsupportedMethod(String),
+
+    #[error("internal HTTP error: {0}")]
+    InternalHttp(#[from] http::Error),
 }
 
 #[cfg(feature = "python")]

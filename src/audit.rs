@@ -8,7 +8,7 @@ use tower::{Layer, Service};
 use url::Url;
 
 /// POSIX-shell-quote a string.
-pub(crate) fn shell_quote(s: &str) -> String {
+pub fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
@@ -72,7 +72,7 @@ fn request_to_curl(
 /// Render a response body for auditing: pretty-printed when it is valid JSON
 /// (so FHIR `OperationOutcome`/`Bundle` job results are readable), otherwise the
 /// raw bytes as a lossy UTF-8 string.
-pub(crate) fn pretty_body(body: &[u8]) -> String {
+pub fn pretty_body(body: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
@@ -162,8 +162,7 @@ where
                         *h = headers;
                     }
                     let http_resp = builder
-                        .body(body)
-                        .expect("status/version are valid, rebuilding response cannot fail");
+                        .body(body)?;
                     Ok(reqwest::Response::from(http_resp))
                 }
                 Err(err) => {

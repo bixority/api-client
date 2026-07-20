@@ -2,14 +2,15 @@ use crate::{Headers, Method, StatusCode};
 use std::str::FromStr;
 
 #[test]
-fn test_method_from_str() {
-    assert_eq!(Method::from_str("GET").unwrap(), Method::Get);
-    assert_eq!(Method::from_str("post").unwrap(), Method::Post);
-    assert_eq!(Method::from_str("  PUT  ").unwrap(), Method::Put);
-    assert_eq!(Method::from_str("DELETE").unwrap(), Method::Delete);
-    assert_eq!(Method::from_str("patch").unwrap(), Method::Patch);
-    assert_eq!(Method::from_str("HEAD").unwrap(), Method::Head);
+fn test_method_from_str() -> Result<(), crate::APIClientError> {
+    assert_eq!(Method::from_str("GET")?, Method::Get);
+    assert_eq!(Method::from_str("post")?, Method::Post);
+    assert_eq!(Method::from_str("  PUT  ")?, Method::Put);
+    assert_eq!(Method::from_str("DELETE")?, Method::Delete);
+    assert_eq!(Method::from_str("patch")?, Method::Patch);
+    assert_eq!(Method::from_str("HEAD")?, Method::Head);
     assert!(Method::from_str("INVALID").is_err());
+    Ok(())
 }
 
 #[test]
