@@ -99,7 +99,7 @@ jobs:
           args: >
             --release
             --strip
-            --locked
+            --offline
             --compatibility pypi
             --interpreter python${{ matrix.python }}
             --out dist

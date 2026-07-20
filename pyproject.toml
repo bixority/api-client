@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0", "setuptools-scm"]
+build-backend = "maturin"
+
+[project]
+name = "api-client"
+dynamic = ["version"]
+description = "API client"
+readme = "README.md"
+authors = [
+    { name = "Olegs Korsaks", email = "olegs.korsaks@bixority.com" }
+]
+requires-python = ">=3.13,<3.15"
+license = { text = "GPL-3.0-only" }
+keywords = ["api", "client", "python"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
+
+[tool.maturin]
+features = ["python"]
+module-name = "api_client"
+version = { command = "python -m setuptools_scm" }
+version-from-cargo = false
