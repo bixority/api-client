@@ -1,9 +1,10 @@
 [package]
 authors = ["Olegs Korsaks <olegs.korsaks@bixority.com>"]
-categories = ["api-client", "python"]
+categories = ["api-client"]
 description = "API client"
 edition = "2024"
-keywords = ["api", "client", "python"]
+rust-version = "1.97"
+keywords = ["api", "client"]
 license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
@@ -11,15 +12,12 @@ repository = "https://github.com/bixority/api-client"
 version = "0.0.1"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
 name = "api_client"
 
 
 [dependencies]
 http = "1.4"
 reqwest = { version = "0.13", features = ["json", "cookies", "rustls"], default-features = false }
-pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
-pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
@@ -28,9 +26,6 @@ futures = "0.3"
 url = "2.5"
 tower = "0.5"
 tracing = "0.1"
-
-[features]
-python = ["dep:pyo3", "dep:pyo3-async-runtimes"]
 
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full", "test-util"] }

@@ -1,6 +1,6 @@
 # api-client
 
-A high-performance, Tower-backed HTTP API client for Rust and Python.
+A high-performance, Tower-backed HTTP API client for Rust.
 
 ## Features
 
@@ -8,11 +8,8 @@ A high-performance, Tower-backed HTTP API client for Rust and Python.
 - **Audit Logging**: Built-in audit layer that logs requests as `curl` commands and pretty-prints JSON responses.
 - **Concurrency Control**: Optional semaphore-based concurrency limiting.
 - **Cookie Support**: Automatic cookie management.
-- **Python Bindings**: First-class async support for Python using PyO3.
 
 ## Installation
-
-### Rust
 
 Add to your `Cargo.toml`:
 
@@ -21,15 +18,7 @@ Add to your `Cargo.toml`:
 api-client = { git = "https://github.com/bixority/api-client" }
 ```
 
-### Python
-
-```bash
-pip install api-client
-```
-
 ## Usage
-
-### Rust
 
 ```rust
 use api_client::{APIClient, Method, Headers};
@@ -62,37 +51,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-```
-
-### Python
-
-```python
-import asyncio
-from api_client import APIClient, Method, Headers
-
-async def main():
-    client = APIClient(
-        "https://api.example.com",
-        timeout_secs=5,
-        max_concurrent=10
-    )
-
-    headers = Headers()
-    headers.content_type("application/json")
-    headers.authorization_bearer("your-token")
-
-    response = await client.request(
-        "/v1/resource",
-        Method.Get,
-        headers=headers
-    )
-
-    if response.status.is_success():
-        data = await response.json()
-        print(f"Data: {data}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
 ```
 
 ## Audit Logging

@@ -1,166 +1,71 @@
-name: Build and publish release
+name: CI
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   release:
     types: [published]
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-
   test:
-    name: Test (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
-
+    name: Test
+    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
-        toolchain: [stable, beta, nightly]
-
+        build: [ stable, beta, nightly, macos ]
+        include:
+          - build: stable
+            os: ubuntu-latest
+            rust: stable
+          - build: beta
+            os: ubuntu-latest
+            rust: beta
+          - build: nightly
+            os: ubuntu-latest
+            rust: nightly
+          - build: macos
+            os: macos-15
+            rust: stable
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.toolchain }}
-
+          toolchain: ${{ matrix.rust }}
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test
 
-  rustfmt:
-    name: Rustfmt + Clippy
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
       - name: Check formatting
         run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic
-
-
-  build-wheels:
-    name: Build wheels (${{ matrix.os }}${{ matrix.target && format(' / {0}', matrix.target) || '' }} / py${{ matrix.python }})
-    needs: [ test, rustfmt ]
-    runs-on: ${{ matrix.runner || matrix.os }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.13", "3.14"]
-        include:
-          - os: linux-aarch64
-            python: "3.13"
-            arch: aarch64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            manylinux: 2_28
-          - os: linux-aarch64
-            python: "3.14"
-            arch: aarch64
-            target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            manylinux: 2_28
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        if: matrix.arch
-        uses: docker/setup-qemu-action@v4
-
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'auto' }}
-          sccache: true
-          args: >
-            --release
-            --strip
-            --compatibility pypi
-            --interpreter python${{ matrix.python }}
-            --out dist
-
-      - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: wheels-${{ matrix.os }}${{ matrix.target && format('-{0}', matrix.target) || '' }}-py${{ matrix.python }}
-          path: dist/*.whl
-
-  build-sdist:
-    name: Build source distribution
-    needs: [ test, rustfmt ]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Build sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
-
-      - name: Upload sdist
-        uses: actions/upload-artifact@v7
-        with:
-          name: sdist
-          path: dist/*.tar.gz
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
 
   publish-crate:
-    name: Publish crate to Codeberg
-    needs: [ build-wheels, build-sdist ]
+    name: Publish Crate
+    needs: [test, lint]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-
     steps:
       - uses: actions/checkout@v7
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
       - name: Publish crate
         run: cargo publish --registry bixority-codeberg
         env:
           CARGO_REGISTRIES_BIXORITY_CODEBERG_TOKEN: Bearer ${{ secrets.CODEBERG_TOKEN }}
-
-  publish-to-pypi:
-    name: Publish to PyPI
-    needs: [ build-wheels, build-sdist ]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Install uv
-        run: pip install uv
-
-      - name: Publish to PyPI
-        run: uv publish dist/* --token ${{ secrets.PYPI_API_TOKEN }}

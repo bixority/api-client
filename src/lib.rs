@@ -6,9 +6,6 @@ mod types;
 #[path = "../tests/unit/mod.rs"]
 mod unit_tests;
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
 pub use crate::types::{APIClientError, Headers, HttpResponse, Method, StatusCode};
 
 use crate::audit::AuditLayer;
@@ -23,7 +20,6 @@ use tower::util::BoxCloneSyncService;
 use tower::{Service, ServiceBuilder};
 use url::Url;
 
-#[cfg_attr(feature = "python", pyclass(from_py_object))]
 #[derive(Clone)]
 pub struct APIClient {
     pub base_url: String,
@@ -135,67 +131,4 @@ impl APIClient {
         let resp = svc.call(req).await?;
         Ok(HttpResponse::from_reqwest(resp))
     }
-}
-
-#[cfg_attr(feature = "python", pymethods)]
-impl APIClient {
-    #[cfg(feature = "python")]
-    #[new]
-    #[pyo3(signature = (base_url, timeout_secs=30, max_concurrent=None))]
-    /// Create a new `APIClient` from Python.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP backend fails to initialize.
-    pub fn py_new(
-        base_url: String,
-        timeout_secs: u64,
-        max_concurrent: Option<usize>,
-    ) -> Result<Self, APIClientError> {
-        Self::new(base_url, timeout_secs, max_concurrent)
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "clear_cookies")]
-    pub fn py_clear_cookies(&self) {
-        self.clear_cookies();
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "request", signature = (uri, method=Method::Get, headers=None, body=None, query_params=None))]
-    fn request_py<'py>(
-        &self,
-        py: Python<'py>,
-        uri: String,
-        method: Method,
-        headers: Option<Headers>,
-        body: Option<Vec<u8>>,
-        query_params: Option<HashMap<String, String>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        use pyo3_async_runtimes::tokio::future_into_py;
-        let self_clone = self.clone();
-        future_into_py(py, async move {
-            let resp = self_clone
-                .request(
-                    &uri,
-                    method,
-                    headers.unwrap_or_default(),
-                    body,
-                    query_params.as_ref(),
-                )
-                .await?;
-            Ok(resp)
-        })
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymodule]
-fn api_client(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<APIClient>()?;
-    m.add_class::<Method>()?;
-    m.add_class::<Headers>()?;
-    m.add_class::<HttpResponse>()?;
-    m.add_class::<StatusCode>()?;
-    Ok(())
 }

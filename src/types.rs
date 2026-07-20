@@ -1,11 +1,8 @@
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
 /// HTTP method recognized by [`APIClient`](super::APIClient).
-#[cfg_attr(feature = "python", pyclass(eq, eq_int, from_py_object))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Method {
     Get,
@@ -26,17 +23,6 @@ impl Method {
             Self::Patch => reqwest::Method::PATCH,
             Self::Head => reqwest::Method::HEAD,
         }
-    }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl Method {
-    #[new]
-    fn py_new(s: &str) -> PyResult<Self> {
-        s.parse().map_err(|e: APIClientError| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string())
-        })
     }
 }
 
@@ -70,7 +56,6 @@ impl std::str::FromStr for Method {
 }
 
 /// Numeric HTTP status code returned by an [`HttpResponse`].
-#[cfg_attr(feature = "python", pyclass(eq, from_py_object))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StatusCode(pub u16);
 
@@ -96,39 +81,6 @@ impl StatusCode {
     }
 }
 
-#[cfg(feature = "python")]
-#[pymethods]
-impl StatusCode {
-    #[new]
-    const fn py_new(val: u16) -> Self {
-        Self(val)
-    }
-
-    #[must_use]
-    #[getter]
-    pub const fn value(&self) -> u16 {
-        self.0
-    }
-
-    #[must_use]
-    #[pyo3(name = "is_success")]
-    pub fn py_is_success(&self) -> bool {
-        self.is_success()
-    }
-
-    #[must_use]
-    #[pyo3(name = "is_client_error")]
-    pub fn py_is_client_error(&self) -> bool {
-        self.is_client_error()
-    }
-
-    #[must_use]
-    #[pyo3(name = "is_server_error")]
-    pub fn py_is_server_error(&self) -> bool {
-        self.is_server_error()
-    }
-}
-
 impl std::fmt::Display for StatusCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -136,7 +88,6 @@ impl std::fmt::Display for StatusCode {
 }
 
 /// Builder for the request header collection.
-#[cfg_attr(feature = "python", pyclass(from_py_object))]
 #[derive(Clone, Debug, Default)]
 pub struct Headers {
     inner: HeaderMap,
@@ -171,24 +122,6 @@ impl Headers {
     pub(crate) fn into_inner(self) -> HeaderMap {
         self.inner
     }
-}
-
-#[cfg_attr(feature = "python", pymethods)]
-impl Headers {
-    #[cfg(feature = "python")]
-    #[new]
-    #[must_use]
-    pub fn py_new() -> Self {
-        Self::new()
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "insert")]
-    pub fn insert_py(&mut self, key: &str, value: &str) {
-        if let (Ok(name), Ok(val)) = (HeaderName::try_from(key), HeaderValue::try_from(value)) {
-            self.inner.insert(name, val);
-        }
-    }
 
     #[must_use]
     pub fn get(&self, key: &str) -> Option<String> {
@@ -196,18 +129,6 @@ impl Headers {
             .get(key)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned)
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "content_type")]
-    pub fn content_type_py(&mut self, content_type: &str) {
-        self.insert_py("content-type", content_type);
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "authorization_bearer")]
-    pub fn authorization_bearer_py(&mut self, token: &str) {
-        self.insert_py("authorization", &format!("Bearer {token}"));
     }
 }
 
@@ -221,7 +142,6 @@ pub struct HttpRequest {
 }
 
 /// Response wrapper that keeps `reqwest` an implementation detail.
-#[cfg_attr(feature = "python", pyclass)]
 pub struct HttpResponse {
     status: StatusCode,
     headers: HeaderMap,
@@ -280,63 +200,6 @@ impl HttpResponse {
     }
 }
 
-#[cfg(feature = "python")]
-#[pymethods]
-impl HttpResponse {
-    #[must_use]
-    #[getter(status)]
-    pub const fn py_status(&self) -> StatusCode {
-        self.status()
-    }
-
-    /// Get a single header value as a UTF-8 string (lossy headers are dropped).
-    #[must_use]
-    #[pyo3(name = "header")]
-    pub fn py_header(&self, name: &str) -> Option<String> {
-        self.header(name)
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "json")]
-    fn json_py<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        use pyo3_async_runtimes::tokio::future_into_py;
-        let inner = self.inner.clone();
-        future_into_py(py, async move {
-            let mut guard = inner.lock().await;
-            let resp = guard.take().ok_or_else(|| {
-                APIClientError::UnsupportedMethod("Response body already consumed".to_string())
-            })?;
-            drop(guard);
-            let body = resp.bytes().await.map_err(APIClientError::from)?;
-            pyo3::Python::try_attach(|py| {
-                let json_module = py.import("json")?;
-                let body_str = String::from_utf8_lossy(&body);
-                let result = json_module.call_method1("loads", (body_str.as_ref(),))?;
-                Ok(result.unbind())
-            })
-            .ok_or_else(|| {
-                APIClientError::UnsupportedMethod("Failed to attach Python".to_string())
-            })?
-        })
-    }
-
-    #[cfg(feature = "python")]
-    #[pyo3(name = "text")]
-    fn text_py<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        use pyo3_async_runtimes::tokio::future_into_py;
-        let inner = self.inner.clone();
-        future_into_py(py, async move {
-            let mut guard = inner.lock().await;
-            let resp = guard.take().ok_or_else(|| {
-                APIClientError::UnsupportedMethod("Response body already consumed".to_string())
-            })?;
-            drop(guard);
-            let t = resp.text().await.map_err(APIClientError::from)?;
-            Ok(t)
-        })
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 pub enum APIClientError {
     #[error("HTTP request failed: {0}")]
@@ -362,15 +225,4 @@ pub enum APIClientError {
 
     #[error("internal HTTP error: {0}")]
     InternalHttp(#[from] http::Error),
-}
-
-#[cfg(feature = "python")]
-impl From<APIClientError> for PyErr {
-    fn from(err: APIClientError) -> Self {
-        match err {
-            APIClientError::Request(e) => pyo3::exceptions::PyRuntimeError::new_err(e.to_string()),
-            APIClientError::Url(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
-            _ => pyo3::exceptions::PyRuntimeError::new_err(err.to_string()),
-        }
-    }
 }
