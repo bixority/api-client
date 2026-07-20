@@ -161,8 +161,7 @@ where
                     if let Some(h) = builder.headers_mut() {
                         *h = headers;
                     }
-                    let http_resp = builder
-                        .body(body)?;
+                    let http_resp = builder.body(body)?;
                     Ok(reqwest::Response::from(http_resp))
                 }
                 Err(err) => {

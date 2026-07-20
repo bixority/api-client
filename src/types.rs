@@ -313,7 +313,8 @@ impl HttpResponse {
                 let body_str = String::from_utf8_lossy(&body);
                 let result = json_module.call_method1("loads", (body_str.as_ref(),))?;
                 Ok(result.unbind())
-            }).ok_or_else(|| {
+            })
+            .ok_or_else(|| {
                 APIClientError::UnsupportedMethod("Failed to attach Python".to_string())
             })?
         })
