@@ -28,7 +28,7 @@ pub struct ObjectStorageAuditor {
 
 impl ObjectStorageAuditor {
     /// Create a new `ObjectStorageAuditor` with a given `base_path`.
-    #[allow(dead_code)]
+    #[must_use]
     pub fn new(client: ObjectStorageClient, base_path: &str) -> Self {
         Self {
             client,
@@ -37,7 +37,7 @@ impl ObjectStorageAuditor {
     }
 
     /// Return the full object storage path for a given relative path.
-    #[allow(dead_code)]
+    #[must_use]
     pub fn full_path(&self, path: &str) -> String {
         format!("{}/{}", self.base_path, path.trim_start_matches('/'))
     }
@@ -71,6 +71,7 @@ impl Auditor for ObjectStorageAuditor {
 }
 
 /// POSIX-shell-quote a string.
+#[must_use]
 pub fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
@@ -135,6 +136,7 @@ fn request_to_curl(
 /// Render a response body for auditing: pretty-printed when it is valid JSON
 /// (so FHIR `OperationOutcome`/`Bundle` job results are readable), otherwise the
 /// raw bytes as a lossy UTF-8 string.
+#[must_use]
 pub fn pretty_body(body: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()

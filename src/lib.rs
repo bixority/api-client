@@ -1,7 +1,7 @@
-mod audit;
+pub mod audit;
 mod cookies;
 mod req;
-mod types;
+pub mod types;
 
 #[cfg(test)]
 #[path = "../tests/unit/mod.rs"]
