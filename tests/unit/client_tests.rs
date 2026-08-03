@@ -3,7 +3,11 @@ use std::collections::HashMap;
 
 #[test]
 fn test_build_url() -> Result<(), crate::APIClientError> {
-    let client = APIClient::new("https://api.example.com".to_string(), 30, None)?;
+    let client = APIClient::new("https://api.example.com".to_string())
+        .timeout_secs(30)
+        .max_concurrent(None)
+        .with_audit(false)
+        .build()?;
 
     // Test basic URL building
     let url = client.build_url("test", None)?;
@@ -24,5 +28,33 @@ fn test_build_url() -> Result<(), crate::APIClientError> {
     assert!(url.contains("foo=bar"));
     assert!(url.starts_with("https://api.example.com/search?"));
 
+    Ok(())
+}
+
+#[test]
+fn test_client_init_audit_toggle() -> Result<(), crate::APIClientError> {
+    // Verify client can be initialized with audit enabled
+    let client_audit = APIClient::new("https://api.example.com".to_string())
+        .timeout_secs(30)
+        .max_concurrent(None)
+        .with_audit(true)
+        .build()?;
+    assert_eq!(client_audit.base_url, "https://api.example.com");
+
+    // Verify client can be initialized with audit disabled
+    let client_no_audit = APIClient::new("https://api.example.com".to_string())
+        .timeout_secs(30)
+        .max_concurrent(None)
+        .with_audit(false)
+        .build()?;
+    assert_eq!(client_no_audit.base_url, "https://api.example.com");
+
+    Ok(())
+}
+
+#[test]
+fn test_client_builder_defaults() -> Result<(), crate::APIClientError> {
+    let client = APIClient::new("https://api.example.com".to_string()).build()?;
+    assert_eq!(client.base_url, "https://api.example.com");
     Ok(())
 }

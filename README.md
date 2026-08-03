@@ -26,11 +26,11 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = APIClient::new(
-        "https://api.example.com".to_string(),
-        5, // timeout in seconds
-        Some(10), // max concurrent requests
-    )?;
+    let client = APIClient::new("https://api.example.com".to_string())
+        .timeout_secs(5)
+        .max_concurrent(Some(10))
+        .with_audit(true)
+        .build()?;
 
     let headers = Headers::new()
         .content_type("application/json")
@@ -56,6 +56,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Audit Logging
 
 The client uses the `tracing` crate for logging. Requests are logged as `curl` commands, and responses are pretty-printed if they contain JSON.
+
+Audit logging can be toggled on or off via the builder:
+
+```rust
+let client = APIClient::new(base_url).with_audit(true).build()?;  // Audit enabled
+let client = APIClient::new(base_url).with_audit(false).build()?; // Audit disabled
+```
 
 Example log output:
 ```text

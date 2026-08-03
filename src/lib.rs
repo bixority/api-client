@@ -13,7 +13,7 @@ use crate::cookies::CookieJar;
 use crate::req::ReqwestService;
 use crate::types::HttpRequest;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tower::util::BoxCloneSyncService;
@@ -23,27 +23,85 @@ use url::Url;
 #[derive(Clone)]
 pub struct APIClient {
     pub base_url: String,
+    timeout_secs: u64,
+    max_concurrent: Option<usize>,
+    audit: bool,
+    state: Arc<Mutex<Option<ClientInner>>>,
+}
+
+#[derive(Clone)]
+struct ClientInner {
     service: BoxCloneSyncService<HttpRequest, reqwest::Response, APIClientError>,
     semaphore: Option<Arc<Semaphore>>,
     cookies: Arc<CookieJar>,
 }
 
 impl APIClient {
-    /// Build a Tower-backed HTTP client.
+    /// Create a new client with default settings:
+    /// - `timeout_secs`: 60
+    /// - `max_concurrent`: 10
+    /// - `audit`: false
+    #[must_use]
+    pub fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            timeout_secs: 60,
+            max_concurrent: Some(10),
+            audit: false,
+            state: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Set the request timeout in seconds.
+    #[must_use]
+    pub fn timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = timeout_secs;
+        self.state = Arc::new(Mutex::new(None));
+        self
+    }
+
+    /// Set the maximum number of concurrent requests.
+    /// Use `None` to disable concurrency limiting.
+    #[must_use]
+    pub fn max_concurrent(mut self, max_concurrent: Option<usize>) -> Self {
+        self.max_concurrent = max_concurrent;
+        self.state = Arc::new(Mutex::new(None));
+        self
+    }
+
+    /// Toggle audit logging.
+    #[must_use]
+    pub fn with_audit(mut self, audit: bool) -> Self {
+        self.audit = audit;
+        self.state = Arc::new(Mutex::new(None));
+        self
+    }
+
+    /// Force initialization of the underlying HTTP client.
     ///
-    /// `timeout_secs` is applied per-request by the underlying HTTP backend.
-    /// `max_concurrent`, when provided, caps the number of in-flight requests
-    /// via an internal semaphore.
+    /// This is called automatically on the first request, but can be used to
+    /// catch configuration errors early.
     ///
     /// # Errors
     ///
-    /// Returns an error if the HTTP backend fails to initialize.
-    pub fn new(
-        base_url: String,
-        timeout_secs: u64,
-        max_concurrent: Option<usize>,
-    ) -> Result<Self, APIClientError> {
-        let timeout = Duration::from_secs(timeout_secs);
+    /// Returns an error if the underlying HTTP client fails to initialize.
+    pub fn build(self) -> Result<Self, APIClientError> {
+        self.get_or_init_inner()?;
+        Ok(self)
+    }
+
+    fn get_or_init_inner(&self) -> Result<ClientInner, APIClientError> {
+        {
+            let guard = self
+                .state
+                .lock()
+                .map_err(|_| APIClientError::ConcurrencyClosed)?;
+            if let Some(inner) = &*guard {
+                return Ok(inner.clone());
+            }
+        }
+
+        let timeout = Duration::from_secs(self.timeout_secs);
         let cookies = Arc::new(CookieJar::new());
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -51,21 +109,44 @@ impl APIClient {
             .build()?;
 
         let base = ReqwestService::new(client);
-        let svc = ServiceBuilder::new()
-            .layer(AuditLayer::new(cookies.clone()))
-            .service(base);
+        let service = if self.audit {
+            let svc = ServiceBuilder::new()
+                .layer(AuditLayer::new(cookies.clone()))
+                .service(base);
+            BoxCloneSyncService::new(svc)
+        } else {
+            BoxCloneSyncService::new(base)
+        };
 
-        Ok(Self {
-            base_url,
-            service: BoxCloneSyncService::new(svc),
-            semaphore: max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
+        let inner = ClientInner {
+            service,
+            semaphore: self.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
             cookies,
-        })
+        };
+
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| APIClientError::ConcurrencyClosed)?;
+        if let Some(existing) = &*guard {
+            return Ok(existing.clone());
+        }
+
+        *guard = Some(inner.clone());
+        drop(guard);
+        Ok(inner)
     }
 
     /// Drop every cookie currently held by the underlying HTTP client.
     pub fn clear_cookies(&self) {
-        self.cookies.clear();
+        if let Some(inner) = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+        {
+            inner.cookies.clear();
+        }
     }
 
     fn build_url(
@@ -94,7 +175,7 @@ impl APIClient {
     /// Execute an HTTP request against `base_url + uri`.
     ///
     /// Query parameters are appended to the URL; the request is bounded by the
-    /// optional concurrency semaphore configured in [`Self::new`].
+    /// optional concurrency semaphore configured via [`Self::new`].
     ///
     /// # Errors
     ///
@@ -108,6 +189,7 @@ impl APIClient {
         body: Option<Vec<u8>>,
         query_params: Option<&HashMap<String, String>>,
     ) -> Result<HttpResponse, APIClientError> {
+        let inner = self.get_or_init_inner()?;
         let url = self.build_url(uri, query_params)?;
 
         let req = HttpRequest {
@@ -117,7 +199,7 @@ impl APIClient {
             body,
         };
 
-        let _permit = match &self.semaphore {
+        let _permit = match inner.semaphore {
             Some(sem) => Some(
                 sem.clone()
                     .acquire_owned()
@@ -127,7 +209,7 @@ impl APIClient {
             None => None,
         };
 
-        let mut svc = self.service.clone();
+        let mut svc = inner.service.clone();
         let resp = svc.call(req).await?;
         Ok(HttpResponse::from_reqwest(resp))
     }
