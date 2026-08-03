@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.0.1"
+version = "0.0.2"
 
 [lib]
 name = "api_client"
