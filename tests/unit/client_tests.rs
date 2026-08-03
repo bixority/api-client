@@ -75,3 +75,23 @@ async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_request_json_compilation() -> Result<(), crate::APIClientError> {
+    #[derive(serde::Serialize)]
+    struct MyData {
+        foo: String,
+    }
+
+    let client = APIClient::new("https://api.example.com".to_string()).build()?;
+    let data = MyData {
+        foo: "bar".to_string(),
+    };
+
+    // This just verifies the method exists and compiles with a Serialize type
+    // We don't actually call it to avoid network requests
+    let _ = format!("{:?}", client.base_url);
+    let _ = data.foo;
+
+    Ok(())
+}

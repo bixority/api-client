@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.0.4"
+version = "0.0.5"
 
 [lib]
 name = "api_client"
@@ -27,6 +27,8 @@ bytes = "1.0"
 url = "2.5"
 tower = "0.5"
 tracing = "0.1"
+chrono = "0.4.45"
+uuid = { version = "1.24.0", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full", "test-util"] }

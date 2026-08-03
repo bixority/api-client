@@ -1,11 +1,55 @@
 use crate::cookies::CookieJar;
 use crate::types::{APIClientError, HttpRequest, Method};
+use chrono::Utc;
 use futures::future::BoxFuture;
 use reqwest::header::HeaderMap;
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 use url::Url;
+use uuid::Uuid;
+
+pub struct AuditMetadata<'a> {
+    date_path: String,
+    timestamp: String,
+    request_id: String,
+    uri_path: Cow<'a, str>,
+    audit_name: Cow<'a, str>,
+}
+
+impl<'a> AuditMetadata<'a> {
+    pub fn new(audit_name: &'a str, uri: &'a str) -> Self {
+        let now = Utc::now();
+        let mut uuid_buf = [0u8; 36];
+        Uuid::new_v4().as_hyphenated().encode_lower(&mut uuid_buf);
+        let request_id = std::str::from_utf8(&uuid_buf).map_or_else(
+            |_| Uuid::new_v4().to_string()[24..].to_owned(),
+            |s| s[24..].to_owned(),
+        );
+
+        Self {
+            date_path: now.format("%Y/%m/%d").to_string(),
+            timestamp: now.format("%H%M%S_%f").to_string(),
+            request_id,
+            uri_path: Cow::Borrowed(uri.trim_matches('/')),
+            audit_name: Cow::Borrowed(audit_name),
+        }
+    }
+
+    pub fn path(&self, method: Method, suffix: &str) -> String {
+        format!(
+            "{}/{}/{}/{}_{}_{}_{}.txt",
+            self.date_path,
+            self.audit_name,
+            self.uri_path,
+            method,
+            self.timestamp,
+            self.request_id,
+            suffix
+        )
+    }
+}
 
 /// POSIX-shell-quote a string.
 pub fn shell_quote(s: &str) -> String {
