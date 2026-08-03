@@ -1,8 +1,9 @@
 use bytes::Bytes;
+use chrono::Utc;
 use futures::Stream;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::de::DeserializeOwned;
-use std::time::Duration;
+use uuid::Uuid;
 
 /// HTTP method recognized by [`APIClient`](super::APIClient).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,6 +105,47 @@ pub struct AuditConfig {
     pub audit_response_body: bool,
 }
 
+/// Metadata for auditing a request/response pair.
+#[derive(Clone, Debug)]
+pub struct AuditMetadata {
+    pub date_path: String,
+    pub timestamp: String,
+    pub request_id: String,
+    pub uri_path: String,
+    pub audit_name: String,
+}
+
+impl AuditMetadata {
+    #[must_use]
+    pub fn new(audit_name: &str, uri: &str) -> Self {
+        let now = Utc::now();
+        let request_id = Uuid::new_v4().to_string();
+        let request_id = request_id[24..].to_owned();
+
+        Self {
+            date_path: now.format("%Y/%m/%d").to_string(),
+            timestamp: now.format("%y%m%d_%H%M%S_%f").to_string(),
+            request_id,
+            uri_path: uri.trim_matches('/').to_owned(),
+            audit_name: audit_name.to_owned(),
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self, method: Method, suffix: &str) -> String {
+        format!(
+            "{}/{}/{}/{}_{}_{}_{}.txt",
+            self.date_path,
+            self.audit_name,
+            self.uri_path,
+            method,
+            self.timestamp,
+            self.request_id,
+            suffix
+        )
+    }
+}
+
 impl AuditConfig {
     /// Create a new audit configuration with the given name.
     #[must_use]
@@ -169,13 +211,14 @@ pub struct HttpRequest {
     pub(crate) headers: HeaderMap,
     pub(crate) body: Option<Vec<u8>>,
     pub(crate) audit: Option<AuditConfig>,
+    pub(crate) audit_meta: Option<AuditMetadata>,
 }
 
 /// Response wrapper that keeps `reqwest` an implementation detail.
 pub struct HttpResponse {
     status: StatusCode,
     headers: HeaderMap,
-    inner: std::sync::Arc<tokio::sync::Mutex<Option<reqwest::Response>>>,
+    inner: reqwest::Response,
 }
 
 impl HttpResponse {
@@ -185,7 +228,7 @@ impl HttpResponse {
         Self {
             status,
             headers,
-            inner: std::sync::Arc::new(tokio::sync::Mutex::new(Some(inner))),
+            inner,
         }
     }
 
@@ -210,10 +253,7 @@ impl HttpResponse {
     /// Returns an error if the body cannot be read, the response was already consumed,
     /// or fails to deserialize into `T`.
     pub async fn json<T: DeserializeOwned>(self) -> Result<T, APIClientError> {
-        let mut guard = self.inner.lock().await;
-        let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
-        drop(guard);
-        resp.json::<T>().await.map_err(APIClientError::from)
+        self.inner.json::<T>().await.map_err(APIClientError::from)
     }
 
     /// Consume the response, returning the body as UTF-8 text.
@@ -223,10 +263,7 @@ impl HttpResponse {
     /// Returns an error if the body cannot be read, the response was already consumed,
     /// or is not valid UTF-8.
     pub async fn text(self) -> Result<String, APIClientError> {
-        let mut guard = self.inner.lock().await;
-        let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
-        drop(guard);
-        resp.text().await.map_err(APIClientError::from)
+        self.inner.text().await.map_err(APIClientError::from)
     }
 
     /// Consume the response, returning the body as a stream of bytes.
@@ -234,13 +271,10 @@ impl HttpResponse {
     /// # Errors
     ///
     /// Returns an error if the response was already consumed.
-    pub async fn bytes_stream(
+    pub fn bytes_stream(
         self,
     ) -> Result<impl Stream<Item = reqwest::Result<Bytes>>, APIClientError> {
-        let mut guard = self.inner.lock().await;
-        let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
-        drop(guard);
-        Ok(resp.bytes_stream())
+        Ok(self.inner.bytes_stream())
     }
 }
 
@@ -252,15 +286,6 @@ pub enum APIClientError {
     #[error("URL error: {0}")]
     Url(#[from] url::ParseError),
 
-    #[error("HTTP error {0}")]
-    Http(StatusCode),
-
-    #[error("rate limited, retry_after={0:?}")]
-    RateLimited(Option<Duration>),
-
-    #[error("circuit open")]
-    CircuitOpen,
-
     #[error("concurrency limiter closed")]
     ConcurrencyClosed,
 
@@ -269,4 +294,7 @@ pub enum APIClientError {
 
     #[error("internal HTTP error: {0}")]
     InternalHttp(#[from] http::Error),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }

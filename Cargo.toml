@@ -16,21 +16,25 @@ name = "api_client"
 
 
 [dependencies]
+bytes = "1.0"
+chrono = "0.4.45"
+futures = "0.3"
 http = "1.5"
+object-storage-client = { version = "0.0.41", registry = "bixority" }
 reqwest = { version = "0.13", features = ["json", "cookies", "rustls", "stream"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.53", features = ["full"] }
-futures = "0.3"
-bytes = "1.0"
-url = "2.5"
 tower = "0.5"
 tracing = "0.1"
-chrono = "0.4.45"
+url = "2.5"
 uuid = { version = "1.24.0", features = ["v4"] }
 
 [dev-dependencies]
+mockall = "0.15"
+predicates = { version = "3", features = ["regex"] }
+regex = "1"
 tokio = { version = "1.52", features = ["full", "test-util"] }
 
 [lints.rust]

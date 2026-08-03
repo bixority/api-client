@@ -6,8 +6,10 @@ A high-performance, Tower-backed HTTP API client for Rust.
 
 - **Tower Stack**: Leverages the Tower ecosystem for middleware (load balancing, retrying, rate limiting, etc.).
 - **Audit Logging**: Built-in audit layer that logs requests as `curl` commands and pretty-prints JSON responses.
+- **Custom Auditors**: Support for custom auditing backends (e.g., Object Storage, custom databases).
 - **Concurrency Control**: Optional semaphore-based concurrency limiting.
 - **Cookie Support**: Automatic cookie management.
+- **Retry Logic**: Automatic retries for idempotent requests on transient errors.
 
 ## Installation
 
@@ -21,15 +23,13 @@ api-client = { git = "https://github.com/bixority/api-client" }
 ## Usage
 
 ```rust
-use api_client::{APIClient, Method, Headers, AuditConfig};
-use std::time::Duration;
+use api_client::{APIClient, Method, Headers};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = APIClient::new("https://api.example.com".to_string())
         .timeout_secs(5)
         .max_concurrent(Some(10))
-        .with_audit(true)
         .build()?;
 
     let headers = Headers::new()
@@ -56,16 +56,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Audit Logging
 
-The client uses the `tracing` crate for logging. Requests are logged as `curl` commands, and responses are pretty-printed if they contain JSON.
+The client includes a powerful auditing layer. By default, if no custom auditor is provided, it logs requests and responses to the standard output using the `tracing` crate.
 
-Audit logging can be toggled on or off via the builder:
+### Custom Auditor
+
+You can implement the `Auditor` trait to send audit data to a custom backend. See [examples/audit.rs](examples/audit.rs) for a complete working example.
 
 ```rust
-let client = APIClient::new(base_url).with_audit(true).build()?;  // Audit enabled
-let client = APIClient::new(base_url).with_audit(false).build()?; // Audit disabled
+use api_client::{Auditor, APIClient, APIClientError};
+use futures::future::{BoxFuture, FutureExt};
+use std::sync::Arc;
+
+struct MyAuditor;
+
+impl Auditor for MyAuditor {
+    fn write_audit_data(
+        &self,
+        path: &str,
+        data: &[u8],
+    ) -> BoxFuture<'static, Result<(), APIClientError>> {
+        let data = data.to_vec();
+        let path = path.to_string();
+        async move {
+            println!("Writing audit data to {}: {} bytes", path, data.len());
+            // In a real implementation, you would write to a database or object storage
+            Ok(())
+        }
+        .boxed()
+    }
+}
+
+// Enable the custom auditor in the client
+let client = APIClient::new(base_url)
+    .with_auditor(Arc::new(MyAuditor))
+    .build()?;
 ```
 
-You can also provide a per-request `AuditConfig` to name the audit entry or to mute the response body (essential for streaming):
+### Per-Request Configuration
+
+Audit logging can be configured per request using `AuditConfig`. This allows you to name the audit entry or mute the response body (crucial for large responses or streaming).
 
 ```rust
 use api_client::AuditConfig;
@@ -74,20 +103,17 @@ use api_client::AuditConfig;
 let audit = AuditConfig::new("my-request").mute_response();
 
 let response = client.request(
-    uri,
-    method,
+    "/v1/resource",
+    Method::Get,
     headers,
-    body,
-    params,
+    None,
+    None,
     Some(audit)
 ).await?;
 ```
 
-Example log output with a named audit:
-```text
-INFO [audit:my-request] request: curl -i -X GET 'https://api.example.com/v1/resource' ...
-INFO [audit:my-request] response: 200 OK (body muted)
-```
+When an auditor is used, the client generates structured paths for audit files:
+`YYYY/MM/DD/{audit_name}/{uri_path}/{METHOD}_{YYMMDD_HHMMSS_ffffff}_{request_id}_{request|response}.txt`
 
 ## Streaming
 
@@ -107,7 +133,7 @@ let response = client.request(
     Some(audit)
 ).await?;
 
-let mut stream = response.bytes_stream().await?;
+let mut stream = response.bytes_stream()?;
 while let Some(chunk_result) = stream.next().await {
     let chunk = chunk_result?;
     println!("Received {} bytes", chunk.len());

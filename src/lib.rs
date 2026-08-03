@@ -1,22 +1,22 @@
 mod audit;
 mod cookies;
 mod req;
-mod services;
 mod types;
+
 #[cfg(test)]
 #[path = "../tests/unit/mod.rs"]
 mod unit_tests;
 
-pub use crate::types::{APIClientError, AuditConfig, Headers, HttpResponse, Method, StatusCode};
+pub use crate::audit::{AuditLayer, Auditor};
+pub use crate::types::{
+    APIClientError, AuditConfig, AuditMetadata, Headers, HttpResponse, Method, StatusCode,
+};
 
-use crate::audit::AuditLayer;
 use crate::cookies::CookieJar;
 use crate::req::ReqwestService;
-use crate::services::audit::Auditor;
 use crate::types::HttpRequest;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -30,7 +30,6 @@ pub struct APIClient {
     pub base_url: String,
     timeout_secs: u64,
     max_concurrent: Option<usize>,
-    audit: bool,
     auditor: Option<Arc<dyn Auditor>>,
     state: Arc<Mutex<Option<ClientInner>>>,
 }
@@ -53,7 +52,6 @@ impl APIClient {
             base_url,
             timeout_secs: 60,
             max_concurrent: Some(10),
-            audit: false,
             auditor: None,
             state: Arc::new(Mutex::new(None)),
         }
@@ -72,14 +70,6 @@ impl APIClient {
     #[must_use]
     pub fn max_concurrent(mut self, max_concurrent: Option<usize>) -> Self {
         self.max_concurrent = max_concurrent;
-        self.state = Arc::new(Mutex::new(None));
-        self
-    }
-
-    /// Toggle audit logging.
-    #[must_use]
-    pub fn with_audit(mut self, audit: bool) -> Self {
-        self.audit = audit;
         self.state = Arc::new(Mutex::new(None));
         self
     }
@@ -120,29 +110,6 @@ impl APIClient {
         code == 502 || code == 503 || code == 504
     }
 
-    async fn audit_request(
-        &self,
-        meta: &crate::audit::AuditMetadata<'_>,
-        method: Method,
-        url: &str,
-        _headers: &Headers,
-        body: Option<&[u8]>,
-    ) -> Result<(), APIClientError> {
-        let Some(auditor) = &self.auditor else {
-            return Ok(());
-        };
-
-        let mut curl = format!("curl -X {method} '{url}'");
-        if let Some(b) = body {
-            let json_str = String::from_utf8_lossy(b);
-            let _ = write!(curl, " -H 'Content-Type: application/json' -d '{json_str}'");
-        }
-
-        let audit_path = meta.path(method, "request");
-        let _ = auditor.write_audit_data(&audit_path, curl.as_bytes()).await;
-        Ok(())
-    }
-
     fn get_or_init_inner(&self) -> Result<ClientInner, APIClientError> {
         {
             let guard = self
@@ -162,14 +129,10 @@ impl APIClient {
             .build()?;
 
         let base = ReqwestService::new(client);
-        let service = if self.audit {
-            let svc = ServiceBuilder::new()
-                .layer(AuditLayer::new(cookies.clone()))
-                .service(base);
-            BoxCloneSyncService::new(svc)
-        } else {
-            BoxCloneSyncService::new(base)
-        };
+        let svc = ServiceBuilder::new()
+            .layer(AuditLayer::new(cookies.clone(), self.auditor.clone()))
+            .service(base);
+        let service = BoxCloneSyncService::new(svc);
 
         let inner = ClientInner {
             service,
@@ -225,6 +188,102 @@ impl APIClient {
         Ok(parsed.into())
     }
 
+    async fn request_once(&self, req: HttpRequest) -> Result<HttpResponse, APIClientError> {
+        let inner = self.get_or_init_inner()?;
+
+        let _permit = match inner.semaphore {
+            Some(sem) => Some(
+                sem.clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| APIClientError::ConcurrencyClosed)?,
+            ),
+            None => None,
+        };
+
+        let mut svc = inner.service.clone();
+        let resp = svc.call(req).await?;
+        Ok(HttpResponse::from_reqwest(resp))
+    }
+
+    /// Execute an HTTP request against `base_url + uri`.
+    ///
+    /// Query parameters are appended to the URL; the request is bounded by the
+    /// optional concurrency semaphore configured via [`Self::new`].
+    ///
+    /// Requests are automatically retried up to 3 times for `GET` requests on
+    /// transient network errors or 5xx server errors (502, 503, 504).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL cannot be parsed, the semaphore is closed,
+    /// or the underlying HTTP call fails.
+    pub async fn request(
+        &self,
+        uri: &str,
+        method: Method,
+        headers: Headers,
+        body: Option<Vec<u8>>,
+        query_params: Option<&HashMap<String, String>>,
+        audit: Option<AuditConfig>,
+    ) -> Result<HttpResponse, APIClientError> {
+        let url = self.build_url(uri, query_params)?;
+        let audit_meta = audit
+            .as_ref()
+            .and_then(|a| a.name.as_ref().map(|name| AuditMetadata::new(name, uri)));
+
+        let req = HttpRequest {
+            method,
+            url,
+            headers: headers.into_inner(),
+            body,
+            audit,
+            audit_meta,
+        };
+
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+
+            let res = self.request_once(req.clone()).await;
+
+            match res {
+                Ok(response)
+                    if attempts < Self::MAX_ATTEMPTS
+                        && method == Method::Get
+                        && Self::is_status_retryable(response.status()) =>
+                {
+                    info!(
+                        "Retryable status {} for {} {}, retrying in {}ms...",
+                        response.status(),
+                        method,
+                        uri,
+                        100 * attempts
+                    );
+                    tokio::time::sleep(Duration::from_millis(u64::from(100 * attempts))).await;
+                }
+                Ok(response) => {
+                    return Ok(response);
+                }
+                Err(e)
+                    if attempts < Self::MAX_ATTEMPTS
+                        && method == Method::Get
+                        && Self::is_error_retryable(&e) =>
+                {
+                    info!(
+                        "Retryable error {} for {} {}, retrying in {}ms...",
+                        e,
+                        method,
+                        uri,
+                        100 * attempts
+                    );
+                    tokio::time::sleep(Duration::from_millis(u64::from(100 * attempts))).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Execute an HTTP request against `base_url + uri` with a JSON body.
     ///
     /// The body is serialized as JSON and the `Content-Type: application/json` header is set.
@@ -253,127 +312,5 @@ impl APIClient {
 
         self.request(uri, method, headers, body, query_params, audit)
             .await
-    }
-
-    /// Execute an HTTP request against `base_url + uri`.
-    ///
-    /// Query parameters are appended to the URL; the request is bounded by the
-    /// optional concurrency semaphore configured via [`Self::new`].
-    ///
-    /// Requests are automatically retried up to 3 times for `GET` requests on
-    /// transient network errors or 5xx server errors (502, 503, 504).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the URL cannot be parsed, the semaphore is closed,
-    /// or the underlying HTTP call fails.
-    pub async fn request(
-        &self,
-        uri: &str,
-        method: Method,
-        headers: Headers,
-        body: Option<Vec<u8>>,
-        query_params: Option<&HashMap<String, String>>,
-        audit: Option<AuditConfig>,
-    ) -> Result<HttpResponse, APIClientError> {
-        let audit_meta = audit.as_ref().and_then(|a| {
-            a.name
-                .as_ref()
-                .map(|name| crate::audit::AuditMetadata::new(name, uri))
-        });
-
-        if let Some(ref meta) = audit_meta {
-            let url = self.build_url(uri, query_params)?;
-            self.audit_request(meta, method, &url, &headers, body.as_deref())
-                .await?;
-        }
-
-        let mut attempts = 0;
-        loop {
-            attempts += 1;
-
-            let res = self
-                .request_once(
-                    uri,
-                    method,
-                    headers.clone(),
-                    body.clone(),
-                    query_params,
-                    audit.clone(),
-                )
-                .await;
-
-            match res {
-                Ok(response)
-                    if attempts < Self::MAX_ATTEMPTS
-                        && method == Method::Get
-                        && Self::is_status_retryable(response.status()) =>
-                {
-                    info!(
-                        "Retryable status {} for {} {}, retrying in {}ms...",
-                        response.status(),
-                        method,
-                        uri,
-                        100 * attempts
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(u64::from(100 * attempts)))
-                        .await;
-                }
-                Ok(response) => {
-                    return Ok(response);
-                }
-                Err(e)
-                    if attempts < Self::MAX_ATTEMPTS
-                        && method == Method::Get
-                        && Self::is_error_retryable(&e) =>
-                {
-                    info!(
-                        "Retryable error {} for {} {}, retrying in {}ms...",
-                        e,
-                        method,
-                        uri,
-                        100 * attempts
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(u64::from(100 * attempts)))
-                        .await;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    async fn request_once(
-        &self,
-        uri: &str,
-        method: Method,
-        headers: Headers,
-        body: Option<Vec<u8>>,
-        query_params: Option<&HashMap<String, String>>,
-        audit: Option<AuditConfig>,
-    ) -> Result<HttpResponse, APIClientError> {
-        let inner = self.get_or_init_inner()?;
-        let url = self.build_url(uri, query_params)?;
-
-        let req = HttpRequest {
-            method,
-            url,
-            headers: headers.into_inner(),
-            body,
-            audit,
-        };
-
-        let _permit = match inner.semaphore {
-            Some(sem) => Some(
-                sem.clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| APIClientError::ConcurrencyClosed)?,
-            ),
-            None => None,
-        };
-
-        let mut svc = inner.service.clone();
-        let resp = svc.call(req).await?;
-        Ok(HttpResponse::from_reqwest(resp))
     }
 }

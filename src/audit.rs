@@ -1,53 +1,72 @@
 use crate::cookies::CookieJar;
 use crate::types::{APIClientError, HttpRequest, Method};
-use chrono::Utc;
+use futures::FutureExt;
 use futures::future::BoxFuture;
+use object_storage_client::ObjectStorageClient;
 use reqwest::header::HeaderMap;
-use std::borrow::Cow;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
+use tracing::{error, info, warn};
 use url::Url;
-use uuid::Uuid;
 
-pub struct AuditMetadata<'a> {
-    date_path: String,
-    timestamp: String,
-    request_id: String,
-    uri_path: Cow<'a, str>,
-    audit_name: Cow<'a, str>,
+pub trait Auditor: Send + Sync {
+    fn write_audit_data(
+        &self,
+        path: &str,
+        data: &[u8],
+    ) -> BoxFuture<'static, Result<(), APIClientError>>;
 }
 
-impl<'a> AuditMetadata<'a> {
-    pub fn new(audit_name: &'a str, uri: &'a str) -> Self {
-        let now = Utc::now();
-        let mut uuid_buf = [0u8; 36];
-        Uuid::new_v4().as_hyphenated().encode_lower(&mut uuid_buf);
-        let request_id = std::str::from_utf8(&uuid_buf).map_or_else(
-            |_| Uuid::new_v4().to_string()[24..].to_owned(),
-            |s| s[24..].to_owned(),
-        );
+/// Auditor that writes audit data to object storage.
+#[allow(dead_code)]
+#[derive(Clone)]
+pub struct ObjectStorageAuditor {
+    client: ObjectStorageClient,
+    base_path: String,
+}
 
+impl ObjectStorageAuditor {
+    /// Create a new `ObjectStorageAuditor` with a given `base_path`.
+    #[allow(dead_code)]
+    pub fn new(client: ObjectStorageClient, base_path: &str) -> Self {
         Self {
-            date_path: now.format("%Y/%m/%d").to_string(),
-            timestamp: now.format("%H%M%S_%f").to_string(),
-            request_id,
-            uri_path: Cow::Borrowed(uri.trim_matches('/')),
-            audit_name: Cow::Borrowed(audit_name),
+            client,
+            base_path: base_path.trim_end_matches('/').to_owned(),
         }
     }
 
-    pub fn path(&self, method: Method, suffix: &str) -> String {
-        format!(
-            "{}/{}/{}/{}_{}_{}_{}.txt",
-            self.date_path,
-            self.audit_name,
-            self.uri_path,
-            method,
-            self.timestamp,
-            self.request_id,
-            suffix
-        )
+    /// Return the full object storage path for a given relative path.
+    #[allow(dead_code)]
+    pub fn full_path(&self, path: &str) -> String {
+        format!("{}/{}", self.base_path, path.trim_start_matches('/'))
+    }
+}
+
+impl Auditor for ObjectStorageAuditor {
+    fn write_audit_data(
+        &self,
+        path: &str,
+        data: &[u8],
+    ) -> BoxFuture<'static, Result<(), APIClientError>> {
+        let full_path = self.full_path(path);
+        let data = data.to_vec();
+        let data_len = data.len();
+        let client = self.client.clone();
+        async move {
+            match client.put(&full_path, data).await {
+                Ok(()) => {
+                    info!("Audit data written to {}: {} bytes", full_path, data_len);
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!("Failed to write audit data to {}: {}", full_path, e);
+                    // We don't want to fail the request if auditing fails
+                    Ok(())
+                }
+            }
+        }
+        .boxed()
     }
 }
 
@@ -143,11 +162,12 @@ fn cookie_header_for(jar: &CookieJar, url: &str) -> Option<String> {
 #[derive(Clone)]
 pub struct AuditLayer {
     cookies: Arc<CookieJar>,
+    auditor: Option<Arc<dyn Auditor>>,
 }
 
 impl AuditLayer {
-    pub(crate) const fn new(cookies: Arc<CookieJar>) -> Self {
-        Self { cookies }
+    pub(crate) fn new(cookies: Arc<CookieJar>, auditor: Option<Arc<dyn Auditor>>) -> Self {
+        Self { cookies, auditor }
     }
 }
 
@@ -156,6 +176,7 @@ impl AuditLayer {
 pub struct Audit<S> {
     inner: S,
     cookies: Arc<CookieJar>,
+    auditor: Option<Arc<dyn Auditor>>,
 }
 
 impl<S> Layer<S> for AuditLayer {
@@ -165,6 +186,7 @@ impl<S> Layer<S> for AuditLayer {
         Audit {
             inner,
             cookies: self.cookies.clone(),
+            auditor: self.auditor.clone(),
         }
     }
 }
@@ -187,6 +209,7 @@ where
 
     fn call(&mut self, req: HttpRequest) -> Self::Future {
         let mut inner = self.inner.clone();
+        let auditor = self.auditor.clone();
         let cookie_header = cookie_header_for(&self.cookies, &req.url);
         let curl = build_curl(&req, cookie_header.as_deref());
         let audit_response_body = req.audit.as_ref().is_none_or(|a| a.audit_response_body);
@@ -197,21 +220,37 @@ where
             .map_or_else(|| "[audit]".to_string(), |n| format!("[audit:{n}]"));
 
         Box::pin(async move {
-            tracing::info!("{log_prefix} request: {curl}");
+            let req_method = req.method;
+            let req_audit_meta = req.audit_meta.clone();
+
+            if let (Some(auditor), Some(meta)) = (auditor.as_ref(), req_audit_meta.as_ref()) {
+                let path = meta.path(req_method, "request");
+                let _ = auditor.write_audit_data(&path, curl.as_bytes()).await;
+            } else {
+                info!("{log_prefix} request: {curl}");
+            }
+
             match inner.call(req).await {
                 Ok(resp) => {
                     let status = resp.status();
 
                     if !audit_response_body {
-                        tracing::info!("{log_prefix} response: {status} (body muted)");
+                        info!("{log_prefix} response: {status} (body muted)");
                         return Ok(resp);
                     }
 
                     let version = resp.version();
                     let headers = resp.headers().clone();
                     let body = resp.bytes().await?;
+                    let pretty = pretty_body(&body);
 
-                    tracing::info!("{log_prefix} response: {status}\n{}", pretty_body(&body));
+                    if let (Some(auditor), Some(meta)) = (auditor.as_ref(), req_audit_meta.as_ref())
+                    {
+                        let path = meta.path(req_method, "response");
+                        let _ = auditor.write_audit_data(&path, pretty.as_bytes()).await;
+                    } else {
+                        info!("{log_prefix} response: {status}\n{pretty}");
+                    }
 
                     let mut builder = http::Response::builder().status(status).version(version);
                     if let Some(h) = builder.headers_mut() {
@@ -221,7 +260,7 @@ where
                     Ok(reqwest::Response::from(http_resp))
                 }
                 Err(err) => {
-                    tracing::error!("{log_prefix} error response: {err:?}");
+                    error!("{log_prefix} error response: {err:?}");
                     Err(err)
                 }
             }
