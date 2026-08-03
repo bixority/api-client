@@ -145,17 +145,29 @@ where
         let mut inner = self.inner.clone();
         let cookie_header = cookie_header_for(&self.cookies, &req.url);
         let curl = build_curl(&req, cookie_header.as_deref());
+        let audit_response_body = req.audit.as_ref().is_none_or(|a| a.audit_response_body);
+        let log_prefix = req
+            .audit
+            .as_ref()
+            .and_then(|a| a.name.as_deref())
+            .map_or_else(|| "[audit]".to_string(), |n| format!("[audit:{n}]"));
 
         Box::pin(async move {
-            tracing::info!("[audit] request: {curl}");
+            tracing::info!("{log_prefix} request: {curl}");
             match inner.call(req).await {
                 Ok(resp) => {
                     let status = resp.status();
+
+                    if !audit_response_body {
+                        tracing::info!("{log_prefix} response: {status} (body muted)");
+                        return Ok(resp);
+                    }
+
                     let version = resp.version();
                     let headers = resp.headers().clone();
                     let body = resp.bytes().await?;
 
-                    tracing::info!("[audit] response: {status}\n{}", pretty_body(&body));
+                    tracing::info!("{log_prefix} response: {status}\n{}", pretty_body(&body));
 
                     let mut builder = http::Response::builder().status(status).version(version);
                     if let Some(h) = builder.headers_mut() {
@@ -165,7 +177,7 @@ where
                     Ok(reqwest::Response::from(http_resp))
                 }
                 Err(err) => {
-                    tracing::error!("[audit] error response: {err:?}");
+                    tracing::error!("{log_prefix} error response: {err:?}");
                     Err(err)
                 }
             }

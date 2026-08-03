@@ -1,3 +1,5 @@
+use bytes::Bytes;
+use futures::Stream;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -93,6 +95,33 @@ pub struct Headers {
     inner: HeaderMap,
 }
 
+/// Configuration for auditing a single request.
+#[derive(Clone, Debug)]
+pub struct AuditConfig {
+    /// Optional name for this audit entry.
+    pub name: Option<String>,
+    /// Whether to audit the response body. If false, the response can be streamed.
+    pub audit_response_body: bool,
+}
+
+impl AuditConfig {
+    /// Create a new audit configuration with the given name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            audit_response_body: true,
+        }
+    }
+
+    /// Disable auditing of the response body, allowing it to be streamed.
+    #[must_use]
+    pub const fn mute_response(mut self) -> Self {
+        self.audit_response_body = false;
+        self
+    }
+}
+
 impl Headers {
     #[must_use]
     pub fn new() -> Self {
@@ -139,6 +168,7 @@ pub struct HttpRequest {
     pub(crate) url: String,
     pub(crate) headers: HeaderMap,
     pub(crate) body: Option<Vec<u8>>,
+    pub(crate) audit: Option<AuditConfig>,
 }
 
 /// Response wrapper that keeps `reqwest` an implementation detail.
@@ -197,6 +227,20 @@ impl HttpResponse {
         let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
         drop(guard);
         resp.text().await.map_err(APIClientError::from)
+    }
+
+    /// Consume the response, returning the body as a stream of bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the response was already consumed.
+    pub async fn bytes_stream(
+        self,
+    ) -> Result<impl Stream<Item = reqwest::Result<Bytes>>, APIClientError> {
+        let mut guard = self.inner.lock().await;
+        let resp = guard.take().ok_or(APIClientError::ConcurrencyClosed)?;
+        drop(guard);
+        Ok(resp.bytes_stream())
     }
 }
 

@@ -6,7 +6,7 @@ mod types;
 #[path = "../tests/unit/mod.rs"]
 mod unit_tests;
 
-pub use crate::types::{APIClientError, Headers, HttpResponse, Method, StatusCode};
+pub use crate::types::{APIClientError, AuditConfig, Headers, HttpResponse, Method, StatusCode};
 
 use crate::audit::AuditLayer;
 use crate::cookies::CookieJar;
@@ -188,6 +188,7 @@ impl APIClient {
         headers: Headers,
         body: Option<Vec<u8>>,
         query_params: Option<&HashMap<String, String>>,
+        audit: Option<AuditConfig>,
     ) -> Result<HttpResponse, APIClientError> {
         let inner = self.get_or_init_inner()?;
         let url = self.build_url(uri, query_params)?;
@@ -197,6 +198,7 @@ impl APIClient {
             url,
             headers: headers.into_inner(),
             body,
+            audit,
         };
 
         let _permit = match inner.semaphore {

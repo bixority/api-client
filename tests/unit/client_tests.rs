@@ -58,3 +58,20 @@ fn test_client_builder_defaults() -> Result<(), crate::APIClientError> {
     assert_eq!(client.base_url, "https://api.example.com");
     Ok(())
 }
+
+#[tokio::test]
+async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
+    let _client = APIClient::new("https://api.example.com".to_string()).build()?;
+
+    // This test just verifies that the new signature works and we can pass AuditConfig
+    // We don't actually send a request because there's no mock server here,
+    // but the compilation check and this call confirm the API changes.
+
+    let audit = crate::AuditConfig::new("test-audit").mute_response();
+    assert!(!audit.audit_response_body);
+    assert_eq!(audit.name, Some("test-audit".to_string()));
+
+    // We don't call request() here because it would try to connect to api.example.com
+
+    Ok(())
+}
