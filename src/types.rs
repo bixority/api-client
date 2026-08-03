@@ -124,7 +124,7 @@ impl AuditMetadata {
 
         Self {
             date_path: now.format("%Y/%m/%d").to_string(),
-            timestamp: now.format("%y%m%d_%H%M%S_%f").to_string(),
+            timestamp: now.format("%y%m%d_%H%M%S").to_string(),
             request_id,
             uri_path: uri.trim_matches('/').to_owned(),
             audit_name: audit_name.to_owned(),

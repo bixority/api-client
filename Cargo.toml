@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.0.7"
+version = "0.0.8"
 
 [lib]
 name = "api_client"
@@ -17,10 +17,10 @@ name = "api_client"
 
 [dependencies]
 bytes = "1.0"
-chrono = "0.4.45"
+chrono = "0.4"
 futures = "0.3"
 http = "1.5"
-object-storage-client = { version = "0.0.41", registry = "bixority-codeberg" }
+object-storage-client = { version = "0.0", registry = "bixority-codeberg" }
 reqwest = { version = "0.13", features = ["json", "cookies", "rustls", "stream"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -29,13 +29,11 @@ tokio = { version = "1.53", features = ["full"] }
 tower = "0.5"
 tracing = "0.1"
 url = "2.5"
-uuid = { version = "1.24.0", features = ["v4"] }
+uuid = { version = "1.24", features = ["v4"] }
 
 [dev-dependencies]
 mockall = "0.15"
-predicates = { version = "3", features = ["regex"] }
-regex = "1"
-tokio = { version = "1.52", features = ["full", "test-util"] }
+predicates = { version = "3.1", features = ["regex"] }
 
 [lints.rust]
 linker_messages = "allow"

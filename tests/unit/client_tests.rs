@@ -117,11 +117,10 @@ async fn test_client_with_auditor() -> Result<(), crate::APIClientError> {
     let date_str = now.format("%Y/%m/%d").to_string();
     let yy_mm_dd = now.format("%y%m%d").to_string();
 
-    let request_pattern = format!(
-        r"^{date_str}/unittest/resource/POST_{yy_mm_dd}_\d{{6}}_\d+_[a-f0-9]{{12}}_request\.txt$",
-    );
+    let request_pattern =
+        format!(r"^{date_str}/unittest/resource/POST_{yy_mm_dd}_\d+_[a-f0-9]{{12}}_request\.txt$");
     let response_pattern = format!(
-        r"^{date_str}/unittest/resource/POST_{yy_mm_dd}_\d{{6}}_\d+_[a-f0-9]{{12}}_response\.txt$",
+        r"^{date_str}/unittest/resource/POST_{yy_mm_dd}_\d+_[a-f0-9]{{12}}_response\.txt$",
     );
 
     mock_auditor
