@@ -61,6 +61,15 @@ fn test_client_builder_defaults() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
+#[test]
+fn test_client_builder_pool_config() -> Result<(), crate::APIClientError> {
+    let client = APIClient::new("https://api.example.com".to_string())
+        .pool_max_idle_per_host(5)
+        .build()?;
+    assert_eq!(client.base_url, "https://api.example.com");
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
     let _client = APIClient::new("https://api.example.com".to_string()).build()?;

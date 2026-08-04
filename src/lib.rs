@@ -17,7 +17,7 @@ use crate::req::ReqwestService;
 use crate::types::HttpRequest;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tower::util::BoxCloneSyncService;
@@ -25,13 +25,102 @@ use tower::{Service, ServiceBuilder};
 use tracing::{debug, info};
 use url::Url;
 
+/// Builder for [`APIClient`].
+#[derive(Clone)]
+pub struct APIClientBuilder {
+    base_url: String,
+    timeout_secs: u64,
+    max_concurrent: Option<usize>,
+    pool_max_idle_per_host: Option<usize>,
+    auditor: Option<Arc<dyn Auditor>>,
+}
+
+impl APIClientBuilder {
+    /// Create a new builder with default settings:
+    /// - `timeout_secs`: 60
+    /// - `max_concurrent`: 10
+    #[must_use]
+    pub fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            timeout_secs: 60,
+            max_concurrent: Some(10),
+            pool_max_idle_per_host: None,
+            auditor: None,
+        }
+    }
+
+    /// Set the request timeout in seconds.
+    #[must_use]
+    pub fn timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = timeout_secs;
+        self
+    }
+
+    /// Set the maximum number of concurrent requests.
+    /// Use `None` to disable concurrency limiting.
+    #[must_use]
+    pub fn max_concurrent(mut self, max_concurrent: Option<usize>) -> Self {
+        self.max_concurrent = max_concurrent;
+        self
+    }
+
+    /// Set the maximum number of idle connections per host in the pool.
+    #[must_use]
+    pub fn pool_max_idle_per_host(mut self, max: usize) -> Self {
+        self.pool_max_idle_per_host = Some(max);
+        self
+    }
+
+    /// Set the auditor for request logging.
+    #[must_use]
+    pub fn with_auditor(mut self, auditor: Arc<dyn Auditor>) -> Self {
+        debug!("API client auditor is set");
+        self.auditor = Some(auditor);
+        self
+    }
+
+    /// Build the [`APIClient`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying HTTP client fails to initialize.
+    pub fn build(self) -> Result<APIClient, APIClientError> {
+        let timeout = Duration::from_secs(self.timeout_secs);
+        let cookies = Arc::new(CookieJar::new());
+        let mut client_builder = reqwest::Client::builder()
+            .timeout(timeout)
+            .cookie_provider(cookies.clone());
+
+        if let Some(max) = self.pool_max_idle_per_host {
+            client_builder = client_builder.pool_max_idle_per_host(max);
+        }
+
+        let client = client_builder.build()?;
+
+        let base = ReqwestService::new(client);
+        let svc = ServiceBuilder::new()
+            .layer(AuditLayer::new(cookies.clone(), self.auditor.clone()))
+            .service(base);
+        let service = BoxCloneSyncService::new(svc);
+
+        let inner = Arc::new(ClientInner {
+            service,
+            semaphore: self.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
+            cookies,
+        });
+
+        Ok(APIClient {
+            base_url: self.base_url,
+            inner,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct APIClient {
     pub base_url: String,
-    timeout_secs: u64,
-    max_concurrent: Option<usize>,
-    auditor: Option<Arc<dyn Auditor>>,
-    state: Arc<Mutex<Option<ClientInner>>>,
+    inner: Arc<ClientInner>,
 }
 
 #[derive(Clone)]
@@ -42,58 +131,16 @@ struct ClientInner {
 }
 
 impl APIClient {
-    /// Create a new client with default settings:
-    /// - `timeout_secs`: 60
-    /// - `max_concurrent`: 10
-    /// - `audit`: false
+    /// Create a new [`APIClientBuilder`] with default settings.
     #[must_use]
-    pub fn new(base_url: String) -> Self {
-        Self {
-            base_url,
-            timeout_secs: 60,
-            max_concurrent: Some(10),
-            auditor: None,
-            state: Arc::new(Mutex::new(None)),
-        }
+    pub fn new(base_url: String) -> APIClientBuilder {
+        APIClientBuilder::new(base_url)
     }
 
-    /// Set the request timeout in seconds.
+    /// Create a new [`APIClientBuilder`] with default settings.
     #[must_use]
-    pub fn timeout_secs(mut self, timeout_secs: u64) -> Self {
-        self.timeout_secs = timeout_secs;
-        self.state = Arc::new(Mutex::new(None));
-        self
-    }
-
-    /// Set the maximum number of concurrent requests.
-    /// Use `None` to disable concurrency limiting.
-    #[must_use]
-    pub fn max_concurrent(mut self, max_concurrent: Option<usize>) -> Self {
-        self.max_concurrent = max_concurrent;
-        self.state = Arc::new(Mutex::new(None));
-        self
-    }
-
-    /// Set the auditor for request logging.
-    #[must_use]
-    pub fn with_auditor(mut self, auditor: Arc<dyn Auditor>) -> Self {
-        debug!("API client auditor is set");
-        self.auditor = Some(auditor);
-        self.state = Arc::new(Mutex::new(None));
-        self
-    }
-
-    /// Force initialization of the underlying HTTP client.
-    ///
-    /// This is called automatically on the first request, but can be used to
-    /// catch configuration errors early.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying HTTP client fails to initialize.
-    pub fn build(self) -> Result<Self, APIClientError> {
-        self.get_or_init_inner()?;
-        Ok(self)
+    pub fn builder(base_url: String) -> APIClientBuilder {
+        APIClientBuilder::new(base_url)
     }
 
     const MAX_ATTEMPTS: u32 = 3;
@@ -110,59 +157,10 @@ impl APIClient {
         code == 502 || code == 503 || code == 504
     }
 
-    fn get_or_init_inner(&self) -> Result<ClientInner, APIClientError> {
-        {
-            let guard = self
-                .state
-                .lock()
-                .map_err(|_| APIClientError::ConcurrencyClosed)?;
-            if let Some(inner) = &*guard {
-                return Ok(inner.clone());
-            }
-        }
-
-        let timeout = Duration::from_secs(self.timeout_secs);
-        let cookies = Arc::new(CookieJar::new());
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .cookie_provider(cookies.clone())
-            .build()?;
-
-        let base = ReqwestService::new(client);
-        let svc = ServiceBuilder::new()
-            .layer(AuditLayer::new(cookies.clone(), self.auditor.clone()))
-            .service(base);
-        let service = BoxCloneSyncService::new(svc);
-
-        let inner = ClientInner {
-            service,
-            semaphore: self.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
-            cookies,
-        };
-
-        let mut guard = self
-            .state
-            .lock()
-            .map_err(|_| APIClientError::ConcurrencyClosed)?;
-        if let Some(existing) = &*guard {
-            return Ok(existing.clone());
-        }
-
-        *guard = Some(inner.clone());
-        drop(guard);
-        Ok(inner)
-    }
 
     /// Drop every cookie currently held by the underlying HTTP client.
     pub fn clear_cookies(&self) {
-        if let Some(inner) = self
-            .state
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().cloned())
-        {
-            inner.cookies.clear();
-        }
+        self.inner.cookies.clear();
     }
 
     fn build_url(
@@ -189,9 +187,7 @@ impl APIClient {
     }
 
     async fn request_once(&self, req: HttpRequest) -> Result<HttpResponse, APIClientError> {
-        let inner = self.get_or_init_inner()?;
-
-        let _permit = match inner.semaphore {
+        let _permit = match self.inner.semaphore.as_ref() {
             Some(sem) => Some(
                 sem.clone()
                     .acquire_owned()
@@ -201,7 +197,7 @@ impl APIClient {
             None => None,
         };
 
-        let mut svc = inner.service.clone();
+        let mut svc = self.inner.service.clone();
         let resp = svc.call(req).await?;
         Ok(HttpResponse::from_reqwest(resp))
     }
