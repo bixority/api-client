@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod builder;
 mod cookies;
 mod req;
 pub mod types;
@@ -8,130 +9,39 @@ pub mod types;
 mod unit_tests;
 
 pub use crate::audit::{AuditLayer, Auditor};
+pub use crate::builder::APIClientBuilder;
 pub use crate::types::{
     APIClientError, AuditConfig, AuditMetadata, Headers, HttpResponse, Method, StatusCode,
 };
 
 use crate::cookies::CookieJar;
-use crate::req::ReqwestService;
 use crate::types::HttpRequest;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
+use tower::Service;
 use tower::util::BoxCloneSyncService;
-use tower::{Service, ServiceBuilder};
-use tracing::{debug, info};
+use tracing::info;
 use url::Url;
-
-/// Builder for [`APIClient`].
-#[derive(Clone)]
-pub struct APIClientBuilder {
-    base_url: String,
-    timeout_secs: u64,
-    max_concurrent: Option<usize>,
-    pool_max_idle_per_host: Option<usize>,
-    auditor: Option<Arc<dyn Auditor>>,
-}
-
-impl APIClientBuilder {
-    /// Create a new builder with default settings:
-    /// - `timeout_secs`: 60
-    /// - `max_concurrent`: 10
-    #[must_use]
-    pub fn new(base_url: String) -> Self {
-        Self {
-            base_url,
-            timeout_secs: 60,
-            max_concurrent: Some(10),
-            pool_max_idle_per_host: None,
-            auditor: None,
-        }
-    }
-
-    /// Set the request timeout in seconds.
-    #[must_use]
-    pub fn timeout_secs(mut self, timeout_secs: u64) -> Self {
-        self.timeout_secs = timeout_secs;
-        self
-    }
-
-    /// Set the maximum number of concurrent requests.
-    /// Use `None` to disable concurrency limiting.
-    #[must_use]
-    pub fn max_concurrent(mut self, max_concurrent: Option<usize>) -> Self {
-        self.max_concurrent = max_concurrent;
-        self
-    }
-
-    /// Set the maximum number of idle connections per host in the pool.
-    #[must_use]
-    pub fn pool_max_idle_per_host(mut self, max: usize) -> Self {
-        self.pool_max_idle_per_host = Some(max);
-        self
-    }
-
-    /// Set the auditor for request logging.
-    #[must_use]
-    pub fn with_auditor(mut self, auditor: Arc<dyn Auditor>) -> Self {
-        debug!("API client auditor is set");
-        self.auditor = Some(auditor);
-        self
-    }
-
-    /// Build the [`APIClient`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying HTTP client fails to initialize.
-    pub fn build(self) -> Result<APIClient, APIClientError> {
-        let timeout = Duration::from_secs(self.timeout_secs);
-        let cookies = Arc::new(CookieJar::new());
-        let mut client_builder = reqwest::Client::builder()
-            .timeout(timeout)
-            .cookie_provider(cookies.clone());
-
-        if let Some(max) = self.pool_max_idle_per_host {
-            client_builder = client_builder.pool_max_idle_per_host(max);
-        }
-
-        let client = client_builder.build()?;
-
-        let base = ReqwestService::new(client);
-        let svc = ServiceBuilder::new()
-            .layer(AuditLayer::new(cookies.clone(), self.auditor.clone()))
-            .service(base);
-        let service = BoxCloneSyncService::new(svc);
-
-        let inner = Arc::new(ClientInner {
-            service,
-            semaphore: self.max_concurrent.map(|n| Arc::new(Semaphore::new(n))),
-            cookies,
-        });
-
-        Ok(APIClient {
-            base_url: self.base_url,
-            inner,
-        })
-    }
-}
 
 #[derive(Clone)]
 pub struct APIClient {
     pub base_url: String,
-    inner: Arc<ClientInner>,
+    pub(crate) inner: Arc<ClientInner>,
 }
 
 #[derive(Clone)]
-struct ClientInner {
-    service: BoxCloneSyncService<HttpRequest, reqwest::Response, APIClientError>,
-    semaphore: Option<Arc<Semaphore>>,
-    cookies: Arc<CookieJar>,
+pub(crate) struct ClientInner {
+    pub(crate) service: BoxCloneSyncService<HttpRequest, reqwest::Response, APIClientError>,
+    pub(crate) semaphore: Option<Arc<Semaphore>>,
+    pub(crate) cookies: Arc<CookieJar>,
 }
 
 impl APIClient {
     /// Create a new [`APIClientBuilder`] with default settings.
+    #[allow(clippy::new_ret_no_self)]
     #[must_use]
     pub fn new(base_url: String) -> APIClientBuilder {
         APIClientBuilder::new(base_url)
@@ -156,7 +66,6 @@ impl APIClient {
         let code = status.as_u16();
         code == 502 || code == 503 || code == 504
     }
-
 
     /// Drop every cookie currently held by the underlying HTTP client.
     pub fn clear_cookies(&self) {
@@ -241,43 +150,47 @@ impl APIClient {
         loop {
             attempts += 1;
 
-            let res = self.request_once(req.clone()).await;
-
-            match res {
-                Ok(response)
-                    if attempts < Self::MAX_ATTEMPTS
-                        && method == Method::Get
-                        && Self::is_status_retryable(response.status()) =>
-                {
-                    info!(
-                        "Retryable status {} for {} {}, retrying in {}ms...",
-                        response.status(),
-                        method,
-                        uri,
-                        100 * attempts
-                    );
-                    tokio::time::sleep(Duration::from_millis(u64::from(100 * attempts))).await;
+            match self.request_once(req.clone()).await {
+                Ok(response) if Self::should_retry_status(&response, method, attempts) => {
+                    self.wait_for_retry(method, uri, response.status().as_u16(), attempts)
+                        .await;
                 }
-                Ok(response) => {
-                    return Ok(response);
-                }
-                Err(e)
-                    if attempts < Self::MAX_ATTEMPTS
-                        && method == Method::Get
-                        && Self::is_error_retryable(&e) =>
-                {
-                    info!(
-                        "Retryable error {} for {} {}, retrying in {}ms...",
-                        e,
-                        method,
-                        uri,
-                        100 * attempts
-                    );
-                    tokio::time::sleep(Duration::from_millis(u64::from(100 * attempts))).await;
+                Ok(response) => return Ok(response),
+                Err(e) if Self::should_retry_error(&e, method, attempts) => {
+                    self.wait_for_retry(method, uri, &e, attempts).await;
                 }
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    fn should_retry_status(resp: &HttpResponse, method: Method, attempts: u32) -> bool {
+        attempts < Self::MAX_ATTEMPTS
+            && method == Method::Get
+            && Self::is_status_retryable(resp.status())
+    }
+
+    fn should_retry_error(err: &APIClientError, method: Method, attempts: u32) -> bool {
+        attempts < Self::MAX_ATTEMPTS && method == Method::Get && Self::is_error_retryable(err)
+    }
+
+    async fn wait_for_retry(
+        &self,
+        method: Method,
+        uri: &str,
+        reason: impl std::fmt::Display,
+        attempts: u32,
+    ) {
+        let delay = 100 * attempts;
+        info!(
+            "Retryable {} {} for {} {}, retrying in {}ms...",
+            if attempts == 1 { "condition" } else { "error" },
+            reason,
+            method,
+            uri,
+            delay
+        );
+        tokio::time::sleep(Duration::from_millis(u64::from(delay))).await;
     }
 
     /// Execute an HTTP request against `base_url + uri` with a JSON body.

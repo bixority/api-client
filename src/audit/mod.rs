@@ -1,14 +1,17 @@
+pub mod utils;
+
+use utils::{build_curl, cookie_header_for};
+pub use utils::{pretty_body, request_to_curl, shell_quote};
+
 use crate::cookies::CookieJar;
-use crate::types::{APIClientError, HttpRequest, Method};
+use crate::types::{APIClientError, AuditMetadata, HttpRequest, Method};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use object_storage_client::ObjectStorageClient;
-use reqwest::header::HeaderMap;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 use tracing::{error, info, warn};
-use url::Url;
 
 pub trait Auditor: Send + Sync {
     fn write_audit_data(
@@ -68,96 +71,6 @@ impl Auditor for ObjectStorageAuditor {
         }
         .boxed()
     }
-}
-
-/// POSIX-shell-quote a string.
-#[must_use]
-pub fn shell_quote(s: &str) -> String {
-    if s.is_empty() {
-        return "''".to_string();
-    }
-    let safe = s.chars().all(|c| {
-        c.is_ascii_alphanumeric()
-            || matches!(c, '_' | '-' | '.' | '/' | ':' | '=' | '@' | ',' | '+')
-    });
-    if safe {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str(r"'\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
-/// Build a `curl` command string that reproduces the given request.
-fn request_to_curl(
-    url: &str,
-    method: Method,
-    headers: &HeaderMap,
-    body: Option<&[u8]>,
-    cookies: Option<&str>,
-) -> String {
-    let mut parts: Vec<String> = vec![
-        "curl".to_string(),
-        "-i".to_string(),
-        "-X".to_string(),
-        method.to_string(),
-        shell_quote(url),
-    ];
-
-    for (name, value) in headers {
-        let value_str = value.to_str().unwrap_or("");
-        let header_line = format!("{}: {}", name.as_str(), value_str);
-        parts.push("-H".to_string());
-        parts.push(shell_quote(&header_line));
-    }
-
-    if let Some(c) = cookies {
-        parts.push("-b".to_string());
-        parts.push(shell_quote(c));
-    }
-
-    if let Some(b) = body {
-        let body_str = String::from_utf8_lossy(b);
-        parts.push("-d".to_string());
-        parts.push(shell_quote(&body_str));
-    }
-
-    parts.join(" ")
-}
-
-/// Render a response body for auditing: pretty-printed when it is valid JSON
-/// (so FHIR `OperationOutcome`/`Bundle` job results are readable), otherwise the
-/// raw bytes as a lossy UTF-8 string.
-#[must_use]
-pub fn pretty_body(body: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| serde_json::to_string_pretty(&v).ok())
-        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
-}
-
-fn build_curl(req: &HttpRequest, cookies: Option<&str>) -> String {
-    request_to_curl(
-        &req.url,
-        req.method,
-        &req.headers,
-        req.body.as_deref(),
-        cookies,
-    )
-}
-
-fn cookie_header_for(jar: &CookieJar, url: &str) -> Option<String> {
-    let parsed = Url::parse(url).ok()?;
-    let header = jar.cookie_header(&parsed)?;
-    header.to_str().ok().map(str::to_owned)
 }
 
 /// Audit layer (middleware factory).
@@ -225,41 +138,26 @@ where
             let req_method = req.method;
             let req_audit_meta = req.audit_meta.clone();
 
-            if let (Some(auditor), Some(meta)) = (auditor.as_ref(), req_audit_meta.as_ref()) {
-                let path = meta.path(req_method, "request");
-                let _ = auditor.write_audit_data(&path, curl.as_bytes()).await;
-            } else {
-                info!("{log_prefix} request: {curl}");
-            }
+            Self::audit_request(
+                auditor.as_deref(),
+                req_audit_meta.as_ref(),
+                req_method,
+                &curl,
+                &log_prefix,
+            )
+            .await;
 
             match inner.call(req).await {
                 Ok(resp) => {
-                    let status = resp.status();
-
-                    if !audit_response_body {
-                        info!("{log_prefix} response: {status} (body muted)");
-                        return Ok(resp);
-                    }
-
-                    let version = resp.version();
-                    let headers = resp.headers().clone();
-                    let body = resp.bytes().await?;
-                    let pretty = pretty_body(&body);
-
-                    if let (Some(auditor), Some(meta)) = (auditor.as_ref(), req_audit_meta.as_ref())
-                    {
-                        let path = meta.path(req_method, "response");
-                        let _ = auditor.write_audit_data(&path, pretty.as_bytes()).await;
-                    } else {
-                        info!("{log_prefix} response: {status}\n{pretty}");
-                    }
-
-                    let mut builder = http::Response::builder().status(status).version(version);
-                    if let Some(h) = builder.headers_mut() {
-                        *h = headers;
-                    }
-                    let http_resp = builder.body(body)?;
-                    Ok(reqwest::Response::from(http_resp))
+                    Self::audit_response(
+                        auditor.as_deref(),
+                        req_audit_meta.as_ref(),
+                        req_method,
+                        resp,
+                        audit_response_body,
+                        &log_prefix,
+                    )
+                    .await
                 }
                 Err(err) => {
                     error!("{log_prefix} error response: {err:?}");
@@ -267,5 +165,57 @@ where
                 }
             }
         })
+    }
+}
+
+impl<S> Audit<S> {
+    async fn audit_request(
+        auditor: Option<&dyn Auditor>,
+        meta: Option<&AuditMetadata>,
+        method: Method,
+        curl: &str,
+        log_prefix: &str,
+    ) {
+        if let (Some(auditor), Some(meta)) = (auditor, meta) {
+            let path = meta.path(method, "request");
+            let _ = auditor.write_audit_data(&path, curl.as_bytes()).await;
+        } else {
+            info!("{log_prefix} request: {curl}");
+        }
+    }
+
+    async fn audit_response(
+        auditor: Option<&dyn Auditor>,
+        meta: Option<&AuditMetadata>,
+        method: Method,
+        resp: reqwest::Response,
+        audit_body: bool,
+        log_prefix: &str,
+    ) -> Result<reqwest::Response, APIClientError> {
+        let status = resp.status();
+
+        if !audit_body {
+            info!("{log_prefix} response: {status} (body muted)");
+            return Ok(resp);
+        }
+
+        let version = resp.version();
+        let headers = resp.headers().clone();
+        let body = resp.bytes().await?;
+        let pretty = pretty_body(&body);
+
+        if let (Some(auditor), Some(meta)) = (auditor, meta) {
+            let path = meta.path(method, "response");
+            let _ = auditor.write_audit_data(&path, pretty.as_bytes()).await;
+        } else {
+            info!("{log_prefix} response: {status}\n{pretty}");
+        }
+
+        let mut builder = http::Response::builder().status(status).version(version);
+        if let Some(h) = builder.headers_mut() {
+            *h = headers;
+        }
+        let http_resp = builder.body(body)?;
+        Ok(reqwest::Response::from(http_resp))
     }
 }

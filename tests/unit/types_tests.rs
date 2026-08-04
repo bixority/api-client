@@ -1,5 +1,52 @@
-use crate::{Headers, Method, StatusCode};
+use crate::{AuditConfig, AuditMetadata, Headers, HttpResponse, Method, StatusCode};
+use futures::StreamExt;
 use std::str::FromStr;
+
+#[tokio::test]
+async fn test_http_response_methods() {
+    let http_resp = http::Response::builder()
+        .status(200)
+        .header("x-test", "value")
+        .body(reqwest::Body::from("{\"result\":\"ok\"}"))
+        .expect("Failed to build mock response");
+    let resp = reqwest::Response::from(http_resp);
+    let my_resp = HttpResponse::from_reqwest(resp);
+
+    assert_eq!(my_resp.status().as_u16(), 200);
+    assert_eq!(
+        my_resp.header("x-test").expect("Missing x-test header"),
+        "value"
+    );
+    assert_eq!(
+        my_resp.text().await.expect("Failed to get text"),
+        "{\"result\":\"ok\"}"
+    );
+
+    // Test JSON (need to recreate response as text() consumes body)
+    let http_resp = http::Response::builder()
+        .status(200)
+        .body(reqwest::Body::from("{\"result\":\"ok\"}"))
+        .expect("Failed to build mock JSON response");
+    let resp = reqwest::Response::from(http_resp);
+    let my_resp = HttpResponse::from_reqwest(resp);
+    let json: serde_json::Value = my_resp.json().await.expect("Failed to parse JSON");
+    assert_eq!(json["result"], "ok");
+
+    // Test bytes_stream
+    let http_resp = http::Response::builder()
+        .status(200)
+        .body(reqwest::Body::from("data"))
+        .expect("Failed to build mock stream response");
+    let resp = reqwest::Response::from(http_resp);
+    let my_resp = HttpResponse::from_reqwest(resp);
+    let mut stream = my_resp.bytes_stream().expect("Failed to get bytes stream");
+    let bytes = stream
+        .next()
+        .await
+        .expect("Stream ended unexpectedly")
+        .expect("Stream error");
+    assert_eq!(bytes, "data");
+}
 
 #[test]
 fn test_method_from_str() -> Result<(), crate::APIClientError> {
@@ -54,4 +101,36 @@ fn test_headers_builder() {
         headers.get("authorization"),
         Some("Bearer token123".to_string())
     );
+}
+
+#[test]
+fn test_audit_config() {
+    let config = AuditConfig::new("test");
+    assert_eq!(config.name, Some("test".to_string()));
+    assert!(config.audit_response_body);
+
+    let config = config.mute_response();
+    assert!(!config.audit_response_body);
+}
+
+#[test]
+fn test_audit_metadata() {
+    let meta = AuditMetadata::new("test-audit", "/some/path?query=1");
+    assert_eq!(meta.audit_name, "test-audit");
+    assert_eq!(meta.uri_path, "some/path?query=1");
+    assert!(!meta.date_path.is_empty());
+    assert!(!meta.timestamp.is_empty());
+    assert!(!meta.request_id.is_empty());
+
+    let path = meta.path(Method::Get, "request");
+    let expected = format!(
+        "{}/{}/{}/{}_{}_{}_request.txt",
+        meta.date_path,
+        meta.audit_name,
+        meta.uri_path,
+        Method::Get,
+        meta.timestamp,
+        meta.request_id
+    );
+    assert_eq!(path, expected);
 }
