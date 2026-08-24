@@ -3,7 +3,7 @@ authors = ["Olegs Korsaks <olegs.korsaks@bixority.com>"]
 categories = ["api-client"]
 description = "API client"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 keywords = ["api", "client"]
 license = "GPL-3.0-only"
 name = "api-client"
@@ -29,7 +29,7 @@ tokio = { version = "1.53", features = ["full"] }
 tower = "0.5"
 tracing = "0.1"
 url = "2.5"
-uuid = { version = "1.24", features = ["v4"] }
+uuid = { version = "1.25", features = ["v4"] }
 
 [dev-dependencies]
 mockall = "0.15"
