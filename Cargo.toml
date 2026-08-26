@@ -2,8 +2,8 @@
 authors = ["Olegs Korsaks <olegs.korsaks@bixority.com>"]
 categories = ["api-client"]
 description = "API client"
-edition = "2024"
 rust-version = "1.98"
+edition = "2024"
 keywords = ["api", "client"]
 license = "GPL-3.0-only"
 name = "api-client"
