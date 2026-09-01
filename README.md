@@ -20,6 +20,13 @@ Add to your `Cargo.toml`:
 api-client = { git = "https://github.com/bixority/api-client" }
 ```
 
+To enable audit logging functionality and object storage integration:
+
+```toml
+[dependencies]
+api-client = { git = "https://github.com/bixority/api-client", features = ["audit"] }
+```
+
 ## Usage
 
 ```rust
@@ -42,7 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         headers,
         None, // body
         None, // query params
-        None, // audit config
     ).await?;
 
     if response.status().is_success() {
@@ -55,6 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ## Audit Logging
+
+> **Note:** Audit logging requires the `audit` feature flag to be enabled.
 
 The client includes a powerful auditing layer. By default, if no custom auditor is provided, it logs requests and responses to the standard output using the `tracing` crate.
 

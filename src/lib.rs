@@ -1,3 +1,4 @@
+#[cfg(feature = "audit")]
 pub mod audit;
 pub mod builder;
 mod cookies;
@@ -8,10 +9,13 @@ pub mod types;
 #[path = "../tests/unit/mod.rs"]
 mod unit_tests;
 
+#[cfg(feature = "audit")]
 pub use crate::audit::{AuditLayer, Auditor};
 pub use crate::builder::APIClientBuilder;
+#[cfg(feature = "audit")]
+pub use crate::types::{AuditConfig, AuditMetadata};
 pub use crate::types::{
-    APIClientError, AuditConfig, AuditMetadata, Headers, HttpResponse, Method, StatusCode,
+    APIClientError, Headers, HttpResponse, Method, StatusCode,
 };
 
 use crate::cookies::CookieJar;
@@ -43,13 +47,13 @@ impl APIClient {
     /// Create a new [`APIClientBuilder`] with default settings.
     #[allow(clippy::new_ret_no_self)]
     #[must_use]
-    pub fn new(base_url: String) -> APIClientBuilder {
+    pub const fn new(base_url: String) -> APIClientBuilder {
         APIClientBuilder::new(base_url)
     }
 
     /// Create a new [`APIClientBuilder`] with default settings.
     #[must_use]
-    pub fn builder(base_url: String) -> APIClientBuilder {
+    pub const fn builder(base_url: String) -> APIClientBuilder {
         APIClientBuilder::new(base_url)
     }
 
@@ -123,6 +127,7 @@ impl APIClient {
     ///
     /// Returns an error if the URL cannot be parsed, the semaphore is closed,
     /// or the underlying HTTP call fails.
+    #[cfg(feature = "audit")]
     pub async fn request(
         &self,
         uri: &str,
@@ -144,6 +149,54 @@ impl APIClient {
             body,
             audit,
             audit_meta,
+        };
+
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+
+            match self.request_once(req.clone()).await {
+                Ok(response) if Self::should_retry_status(&response, method, attempts) => {
+                    self.wait_for_retry(method, uri, response.status().as_u16(), attempts)
+                        .await;
+                }
+                Ok(response) => return Ok(response),
+                Err(e) if Self::should_retry_error(&e, method, attempts) => {
+                    self.wait_for_retry(method, uri, &e, attempts).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Execute an HTTP request against `base_url + uri`.
+    ///
+    /// Query parameters are appended to the URL; the request is bounded by the
+    /// optional concurrency semaphore configured via [`Self::new`].
+    ///
+    /// Requests are automatically retried up to 3 times for `GET` requests on
+    /// transient network errors or 5xx server errors (502, 503, 504).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the URL cannot be parsed, the semaphore is closed,
+    /// or the underlying HTTP call fails.
+    #[cfg(not(feature = "audit"))]
+    pub async fn request(
+        &self,
+        uri: &str,
+        method: Method,
+        headers: Headers,
+        body: Option<Vec<u8>>,
+        query_params: Option<&HashMap<String, String>>,
+    ) -> Result<HttpResponse, APIClientError> {
+        let url = self.build_url(uri, query_params)?;
+
+        let req = HttpRequest {
+            method,
+            url,
+            headers: headers.into_inner(),
+            body,
         };
 
         let mut attempts = 0;
@@ -200,6 +253,7 @@ impl APIClient {
     /// # Errors
     ///
     /// Returns an error if serialization fails or the request fails.
+    #[cfg(feature = "audit")]
     pub async fn request_json<T: Serialize + Sync>(
         &self,
         uri: &str,
@@ -221,5 +275,34 @@ impl APIClient {
 
         self.request(uri, method, headers, body, query_params, audit)
             .await
+    }
+
+    /// Execute an HTTP request against `base_url + uri` with a JSON body.
+    ///
+    /// The body is serialized as JSON and the `Content-Type: application/json` header is set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails or the request fails.
+    #[cfg(not(feature = "audit"))]
+    pub async fn request_json<T: Serialize + Sync>(
+        &self,
+        uri: &str,
+        method: Method,
+        headers: Headers,
+        json: Option<&T>,
+        query_params: Option<&HashMap<String, String>>,
+    ) -> Result<HttpResponse, APIClientError> {
+        let body = json
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|e| APIClientError::UnsupportedMethod(format!("Serialization error: {e}")))?;
+
+        let mut headers = headers;
+        if json.is_some() {
+            headers = headers.content_type("application/json");
+        }
+
+        self.request(uri, method, headers, body, query_params).await
     }
 }

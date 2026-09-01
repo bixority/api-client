@@ -1,4 +1,6 @@
-use crate::{AuditConfig, AuditMetadata, Headers, HttpResponse, Method, StatusCode};
+#[cfg(feature = "audit")]
+use crate::{AuditConfig, AuditMetadata};
+use crate::{Headers, HttpResponse, Method, StatusCode};
 use futures::StreamExt;
 use std::str::FromStr;
 
@@ -103,6 +105,7 @@ fn test_headers_builder() {
     );
 }
 
+#[cfg(feature = "audit")]
 #[test]
 fn test_audit_config() {
     let config = AuditConfig::new("test");
@@ -113,6 +116,7 @@ fn test_audit_config() {
     assert!(!config.audit_response_body);
 }
 
+#[cfg(feature = "audit")]
 #[test]
 fn test_audit_metadata() {
     let meta = AuditMetadata::new("test-audit", "/some/path?query=1");

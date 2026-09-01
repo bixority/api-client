@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.0.11"
+version = "0.0.12"
 
 [lib]
 name = "api_client"
@@ -20,7 +20,7 @@ bytes = "1.12"
 chrono = "0.4"
 futures = "0.3"
 http = "1.5"
-object-storage-client = { version = "0.1", registry = "bixority-codeberg" }
+object-storage-client = { version = "0.1", registry = "bixority-codeberg", optional = true }
 reqwest = { version = "0.13", features = ["json", "cookies", "rustls", "stream"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -34,6 +34,13 @@ uuid = { version = "1.25", features = ["v4"] }
 [dev-dependencies]
 mockall = "0.15"
 predicates = { version = "3.1", features = ["regex"] }
+
+[features]
+audit = ["dep:object-storage-client"]
+
+[[example]]
+name = "audit"
+required-features = ["audit"]
 
 [lints.rust]
 linker_messages = "allow"

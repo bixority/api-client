@@ -1,3 +1,4 @@
+#[cfg(feature = "audit")]
 mod audit;
 mod error;
 mod headers;
@@ -6,6 +7,7 @@ mod request;
 mod response;
 mod status;
 
+#[cfg(feature = "audit")]
 pub use audit::{AuditConfig, AuditMetadata};
 pub use error::APIClientError;
 pub use headers::Headers;

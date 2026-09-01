@@ -1,3 +1,4 @@
+#[cfg(feature = "audit")]
 use crate::audit::{AuditLayer, Auditor};
 use crate::cookies::CookieJar;
 use crate::req::ReqwestService;
@@ -8,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower::util::BoxCloneSyncService;
+#[cfg(feature = "audit")]
 use tracing::debug;
 
 /// Builder for [`APIClient`].
@@ -17,6 +19,7 @@ pub struct APIClientBuilder {
     pub(crate) timeout_secs: u64,
     pub(crate) max_concurrent: Option<usize>,
     pub(crate) pool_max_idle_per_host: Option<usize>,
+    #[cfg(feature = "audit")]
     pub(crate) auditor: Option<Arc<dyn Auditor>>,
 }
 
@@ -25,12 +28,13 @@ impl APIClientBuilder {
     /// - `timeout_secs`: 60
     /// - `max_concurrent`: 10
     #[must_use]
-    pub fn new(base_url: String) -> Self {
+    pub const fn new(base_url: String) -> Self {
         Self {
             base_url,
             timeout_secs: 60,
             max_concurrent: Some(10),
             pool_max_idle_per_host: None,
+            #[cfg(feature = "audit")]
             auditor: None,
         }
     }
@@ -58,6 +62,7 @@ impl APIClientBuilder {
     }
 
     /// Set the auditor for request logging.
+    #[cfg(feature = "audit")]
     #[must_use]
     pub fn with_auditor(mut self, auditor: Arc<dyn Auditor>) -> Self {
         debug!("API client auditor is set");
@@ -84,9 +89,12 @@ impl APIClientBuilder {
         let client = client_builder.build()?;
 
         let base = ReqwestService::new(client);
+        #[cfg(feature = "audit")]
         let svc = ServiceBuilder::new()
             .layer(AuditLayer::new(cookies.clone(), self.auditor.clone()))
             .service(base);
+        #[cfg(not(feature = "audit"))]
+        let svc = ServiceBuilder::new().service(base);
         let service = BoxCloneSyncService::new(svc);
 
         let inner = Arc::new(ClientInner {

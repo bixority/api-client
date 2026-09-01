@@ -1,9 +1,14 @@
 use crate::APIClient;
+#[cfg(feature = "audit")]
 use crate::types::{AuditConfig, Headers, Method};
+#[cfg(feature = "audit")]
 use futures::FutureExt;
+#[cfg(feature = "audit")]
 use mockall::predicate;
 use std::collections::HashMap;
+#[cfg(feature = "audit")]
 use std::sync::Arc;
+#[cfg(feature = "audit")]
 use tokio::io::AsyncWriteExt;
 
 #[test]
@@ -78,6 +83,7 @@ fn test_client_clear_cookies() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
+#[cfg(feature = "audit")]
 #[tokio::test]
 async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
     let _client = APIClient::new("https://api.example.com".to_string()).build()?;
@@ -92,6 +98,40 @@ async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
 
     // We don't call request() here because it would try to connect to api.example.com
 
+    Ok(())
+}
+
+#[cfg(not(feature = "audit"))]
+#[tokio::test]
+async fn test_request_without_audit() -> Result<(), crate::APIClientError> {
+    use crate::types::{Headers, Method};
+    use tokio::io::AsyncWriteExt;
+
+    // Setup a simple mock server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let url = format!("http://{addr}");
+
+    tokio::spawn(async move {
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+
+    let client = APIClient::new(url).build()?;
+
+    let response = client
+        .request(
+            "/resource",
+            Method::Post,
+            Headers::new(),
+            Some(b"some body".to_vec()),
+            None,
+        )
+        .await?;
+
+    assert_eq!(response.status().as_u16(), 200);
     Ok(())
 }
 
@@ -115,6 +155,7 @@ async fn test_request_json_compilation() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
+#[cfg(feature = "audit")]
 mockall::mock! {
     pub Auditor {}
     impl crate::audit::Auditor for Auditor {
@@ -126,6 +167,7 @@ mockall::mock! {
     }
 }
 
+#[cfg(feature = "audit")]
 #[tokio::test]
 async fn test_client_with_auditor() -> Result<(), crate::APIClientError> {
     let mut mock_auditor = MockAuditor::new();
