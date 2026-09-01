@@ -1,6 +1,6 @@
+use crate::types::Method;
 #[cfg(feature = "audit")]
 use crate::types::{AuditConfig, AuditMetadata};
-use crate::types::Method;
 use reqwest::header::HeaderMap;
 
 /// Internal request representation passed through the Tower service stack.

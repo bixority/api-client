@@ -12,11 +12,9 @@ mod unit_tests;
 #[cfg(feature = "audit")]
 pub use crate::audit::{AuditLayer, Auditor};
 pub use crate::builder::APIClientBuilder;
+pub use crate::types::{APIClientError, Headers, HttpResponse, Method, StatusCode};
 #[cfg(feature = "audit")]
 pub use crate::types::{AuditConfig, AuditMetadata};
-pub use crate::types::{
-    APIClientError, Headers, HttpResponse, Method, StatusCode,
-};
 
 use crate::cookies::CookieJar;
 use crate::types::HttpRequest;
