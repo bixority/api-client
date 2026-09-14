@@ -66,6 +66,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The client includes a powerful auditing layer. By default, if no custom auditor is provided, it logs requests and responses to the standard output using the `tracing` crate.
 
+### Object Storage Auditor
+
+When the `audit` feature is enabled, the client provides `ObjectStorageAuditor` to store audit logs directly in S3 or S3-compatible object storage (such as MinIO).
+
+```rust
+use api_client::APIClient;
+use api_client::audit::ObjectStorageAuditor;
+use object_storage_client::ObjectStorageClient;
+use std::sync::Arc;
+
+let storage_client = ObjectStorageClient::new();
+let auditor = ObjectStorageAuditor::new(storage_client, "s3://my-audit-bucket/audits");
+
+let client = APIClient::new("https://api.example.com".to_string())
+    .with_auditor(Arc::new(auditor))
+    .build()?;
+```
+
+#### Environment Variables
+
+Connection settings and credentials for object storage are loaded from environment variables:
+
+- `S3_ENDPOINT` (or `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`): Custom endpoint URL for S3-compatible storage.
+- `S3_ACCESS_KEY_ID` (or `AWS_ACCESS_KEY_ID`): Access key ID.
+- `S3_SECRET_ACCESS_KEY` (or `AWS_SECRET_ACCESS_KEY`): Secret access key.
+- `S3_REGION` (or `AWS_REGION`): Storage region (defaults to `us-east-1` if not specified).
+- `S3_ALLOW_HTTP`: Set to `true` to allow unencrypted HTTP connections (useful for local development). Plain HTTP is also automatically permitted if the endpoint starts with `http://`.
+
+#### MinIO Example
+
+To store audit logs in a local MinIO instance (for example, running via Docker at `http://localhost:9000`):
+
+1. Set the environment variables:
+
+```bash
+export S3_ENDPOINT="http://localhost:9000"
+export S3_ACCESS_KEY_ID="minioadmin"
+export S3_SECRET_ACCESS_KEY="minioadmin"
+export S3_REGION="us-east-1"
+export S3_ALLOW_HTTP=true
+```
+
+*(Standard AWS variable names like `AWS_ENDPOINT_URL_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` are also supported.)*
+
+2. Configure `ObjectStorageAuditor` with your MinIO bucket and base path:
+
+```rust
+use api_client::APIClient;
+use api_client::audit::ObjectStorageAuditor;
+use object_storage_client::ObjectStorageClient;
+use std::sync::Arc;
+
+let storage_client = ObjectStorageClient::new();
+let auditor = ObjectStorageAuditor::new(storage_client, "s3://audit-logs/api-client");
+
+let client = APIClient::new("https://api.example.com".to_string())
+    .with_auditor(Arc::new(auditor))
+    .build()?;
+```
+
+When requests are executed with an `AuditConfig` naming the entry (e.g. `Some(AuditConfig::new("user-request"))`), audit files will be uploaded to your MinIO bucket following the structured path format:
+`s3://audit-logs/api-client/YYYY/MM/DD/{audit_name}/{uri_path}/{METHOD}_{YYMMDD_HHMMSS}_{request_id}_{request|response}.txt`
+
 ### Custom Auditor
 
 You can implement the `Auditor` trait to send audit data to a custom backend. See [examples/audit.rs](examples/audit.rs) for a complete working example.
@@ -121,7 +184,7 @@ let response = client.request(
 ```
 
 When an auditor is used, the client generates structured paths for audit files:
-`YYYY/MM/DD/{audit_name}/{uri_path}/{METHOD}_{YYMMDD_HHMMSS_ffffff}_{request_id}_{request|response}.txt`
+`YYYY/MM/DD/{audit_name}/{uri_path}/{METHOD}_{YYMMDD_HHMMSS}_{request_id}_{request|response}.txt`
 
 ## Streaming
 
