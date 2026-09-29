@@ -10,7 +10,7 @@ pub mod types;
 mod unit_tests;
 
 #[cfg(feature = "audit")]
-pub use crate::audit::{AuditLayer, Auditor};
+pub use crate::audit::{AuditLayer, Auditor, ObjectStorageAuditor};
 pub use crate::builder::APIClientBuilder;
 pub use crate::types::{APIClientError, Headers, HttpResponse, Method, StatusCode};
 #[cfg(feature = "audit")]
@@ -45,13 +45,13 @@ impl APIClient {
     /// Create a new [`APIClientBuilder`] with default settings.
     #[allow(clippy::new_ret_no_self)]
     #[must_use]
-    pub const fn new(base_url: String) -> APIClientBuilder {
+    pub fn new(base_url: impl Into<String>) -> APIClientBuilder {
         APIClientBuilder::new(base_url)
     }
 
     /// Create a new [`APIClientBuilder`] with default settings.
     #[must_use]
-    pub const fn builder(base_url: String) -> APIClientBuilder {
+    pub fn builder(base_url: impl Into<String>) -> APIClientBuilder {
         APIClientBuilder::new(base_url)
     }
 

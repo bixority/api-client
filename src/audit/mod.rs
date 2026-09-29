@@ -4,7 +4,7 @@ use utils::{build_curl, cookie_header_for};
 pub use utils::{pretty_body, request_to_curl, shell_quote};
 
 use crate::cookies::CookieJar;
-use crate::types::{APIClientError, AuditMetadata, HttpRequest, Method};
+use crate::types::{APIClientError, AuditConfig, AuditMetadata, HttpRequest, Method};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use object_storage_client::ObjectStorageClient;
@@ -26,23 +26,43 @@ pub trait Auditor: Send + Sync {
 #[derive(Clone)]
 pub struct ObjectStorageAuditor {
     client: ObjectStorageClient,
-    base_path: String,
+    base_path: Option<String>,
 }
 
 impl ObjectStorageAuditor {
-    /// Create a new `ObjectStorageAuditor` with a given `base_path`.
+    /// Create a new `ObjectStorageAuditor`.
+    ///
+    /// The audit path defaults to the path configured in `AuditConfig::default()`.
     #[must_use]
-    pub fn new(client: ObjectStorageClient, base_path: &str) -> Self {
+    pub fn new(client: ObjectStorageClient) -> Self {
         Self {
             client,
-            base_path: base_path.trim_end_matches('/').to_owned(),
+            base_path: AuditConfig::default().path,
         }
+    }
+
+    /// Set or override the base audit path.
+    #[must_use]
+    pub fn with_audit_path(mut self, path: impl Into<String>) -> Self {
+        self.base_path = Some(path.into());
+        self
     }
 
     /// Return the full object storage path for a given relative path.
     #[must_use]
     pub fn full_path(&self, path: &str) -> String {
-        format!("{}/{}", self.base_path, path.trim_start_matches('/'))
+        let trimmed_path = path.trim_start_matches('/');
+        self.base_path.as_deref().map_or_else(
+            || trimmed_path.to_owned(),
+            |base| {
+                let trimmed_base = base.trim_matches('/');
+                if trimmed_base.is_empty() {
+                    trimmed_path.to_owned()
+                } else {
+                    format!("{trimmed_base}/{trimmed_path}")
+                }
+            },
+        )
     }
 }
 

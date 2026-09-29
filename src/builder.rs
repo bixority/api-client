@@ -28,9 +28,9 @@ impl APIClientBuilder {
     /// - `timeout_secs`: 60
     /// - `max_concurrent`: 10
     #[must_use]
-    pub const fn new(base_url: String) -> Self {
+    pub fn new(base_url: impl Into<String>) -> Self {
         Self {
-            base_url,
+            base_url: base_url.into(),
             timeout_secs: 60,
             max_concurrent: Some(10),
             pool_max_idle_per_host: None,

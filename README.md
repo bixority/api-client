@@ -6,7 +6,8 @@ A high-performance, Tower-backed HTTP API client for Rust.
 
 - **Tower Stack**: Leverages the Tower ecosystem for middleware (load balancing, retrying, rate limiting, etc.).
 - **Audit Logging**: Built-in audit layer that logs requests as `curl` commands and pretty-prints JSON responses.
-- **Custom & S3 Auditors**: First-class support for storing audit logs in S3/MinIO object storage or custom audit backends.
+- **Custom & S3 Auditors**: First-class support for storing audit logs in S3/Garage object storage or custom audit 
+backends.
 - **Concurrency Control**: Optional semaphore-based concurrency limiting.
 - **Connection Pooling**: Configurable idle connection limits per host.
 - **Cookie Support**: Automatic cookie management and session jar clearing.
@@ -22,7 +23,7 @@ Add `api-client` to your `Cargo.toml`:
 api-client = { git = "https://github.com/bixority/api-client" }
 ```
 
-To enable audit logging functionality and S3/MinIO object storage integration, enable the `audit` feature:
+To enable audit logging functionality and S3/Garage object storage integration, enable the `audit` feature:
 
 ```toml
 [dependencies]
@@ -32,14 +33,17 @@ object-storage-client = { version = "0.1", registry = "bixority-codeberg" }
 
 ## Environment Variables
 
-When using the `audit` feature with `ObjectStorageAuditor`, connection settings and S3 credentials are automatically loaded from environment variables:
+When using the `audit` feature with `ObjectStorageAuditor`, connection settings and S3 credentials are automatically 
+loaded from environment variables:
 
 - `API_CLIENT_AUDIT_PATH`: Root path for audit log storage (loaded into `AuditConfig`).
-- `S3_ENDPOINT` (or `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`): Custom endpoint URL for S3 or S3-compatible storage (e.g., `http://localhost:9000` for MinIO).
+- `S3_ENDPOINT` (or `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`): Custom endpoint URL for S3 or 
+S3-compatible storage (e.g., `http://localhost:3900` for Garage).
 - `S3_ACCESS_KEY_ID` (or `AWS_ACCESS_KEY_ID`): Access key ID / username.
 - `S3_SECRET_ACCESS_KEY` (or `AWS_SECRET_ACCESS_KEY`): Secret access key / password.
 - `S3_REGION` (or `AWS_REGION`): Storage region (defaults to `us-east-1` if not specified).
-- `S3_ALLOW_HTTP`: Set to `true` to allow plain HTTP connections for local development (automatically permitted if endpoint begins with `http://`).
+- `S3_ALLOW_HTTP`: Set to `true` to allow plain HTTP connections for local development (automatically permitted if 
+endpoint begins with `http://`).
 
 ### Environment Configuration Example
 
@@ -53,7 +57,8 @@ export S3_ALLOW_HTTP=true
 
 ## Usage
 
-Below is a complete usage example demonstrating how to configure environment variables, initialize `APIClient` with `ObjectStorageAuditor`, and execute audited HTTP requests:
+Below is a complete usage example demonstrating how to configure environment variables, initialize `APIClient` with 
+`ObjectStorageAuditor`, and execute audited HTTP requests:
 
 ```rust
 use api_client::audit::ObjectStorageAuditor;
@@ -64,15 +69,16 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Setup environment variables (typically done via shell / .env file)
-    // std::env::set_var("S3_ENDPOINT", "http://localhost:9000");
-    // std::env::set_var("S3_ACCESS_KEY_ID", "minioadmin");
-    // std::env::set_var("S3_SECRET_ACCESS_KEY", "minioadmin");
+    // std::env::set_var("S3_ENDPOINT", "http://localhost:3900");
+    // std::env::set_var("S3_ACCESS_KEY_ID", "rootroot");
+    // std::env::set_var("S3_SECRET_ACCESS_KEY", "rootrootrootroot");
     // std::env::set_var("S3_REGION", "us-east-1");
     // std::env::set_var("S3_ALLOW_HTTP", "true");
 
     // 2. Initialize ObjectStorageClient and ObjectStorageAuditor
     let storage_client = ObjectStorageClient::new();
-    let auditor = ObjectStorageAuditor::new(storage_client, "s3://audit-logs/api-client");
+    let auditor = ObjectStorageAuditor::new(storage_client)
+        .with_audit_path("s3://audit-logs/api-client");
 
     // 3. Build APIClient with the auditor and custom options
     let client = APIClient::new("https://httpbin.org".to_string())
@@ -111,7 +117,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-> **Note:** If the `audit` feature is disabled, `APIClient::request` accepts 5 parameters (`uri`, `method`, `headers`, `body`, `query_params`) without the trailing `Option<AuditConfig>`.
+> **Note:** If the `audit` feature is disabled, `APIClient::request` accepts 5 parameters (`uri`, `method`, `headers`, 
+> `body`, `query_params`) without the trailing `Option<AuditConfig>`.
 
 ## Audit Logging
 
@@ -123,11 +130,14 @@ The client includes an auditing layer that captures:
 
 ### Default Tracing Auditor
 
-If no custom auditor is passed via `.with_auditor(...)`, the client automatically logs audit output through the `tracing` crate at `INFO` level.
+If no custom auditor is passed via `.with_auditor(...)`, the client automatically logs audit output through the 
+`tracing` crate at `INFO` level.
 
-### Object Storage Auditor (S3 / MinIO)
+### Object Storage Auditor (S3 / Garage)
 
-`ObjectStorageAuditor` uploads audit files to any S3-compatible object storage.
+`ObjectStorageAuditor` uploads audit files to any S3-compatible object storage. By default, 
+`ObjectStorageAuditor::new()` defaults to the `AuditConfig` path (initialized from `API_CLIENT_AUDIT_PATH`), which can 
+be overridden using `.with_audit_path(...)`.
 
 ```rust
 use api_client::APIClient;
@@ -136,9 +146,11 @@ use object_storage_client::ObjectStorageClient;
 use std::sync::Arc;
 
 let storage_client = ObjectStorageClient::new();
-let auditor = ObjectStorageAuditor::new(storage_client, "s3://my-audit-bucket/audits");
+// Default audit path from API_CLIENT_AUDIT_PATH, or override with .with_audit_path(...)
+let auditor = ObjectStorageAuditor::new(storage_client)
+    .with_audit_path("s3://my-audit-bucket/audits");
 
-let client = APIClient::new("https://api.example.com".to_string())
+let client = APIClient::new("https://api.example.com")
     .with_auditor(Arc::new(auditor))
     .build()?;
 ```
@@ -152,7 +164,8 @@ When an audit name is provided in `AuditConfig`, files are uploaded using the fo
 
 ### Custom Auditor
 
-You can implement the `Auditor` trait to route audit entries to any backend (e.g., custom database, message queue, or stdout console). See [examples/audit.rs](examples/audit.rs) for a complete working example.
+You can implement the `Auditor` trait to route audit entries to any backend (e.g., custom database, message queue, or 
+stdout console). See [examples/audit.rs](examples/audit.rs) for a complete working example.
 
 ```rust
 use api_client::{APIClient, APIClientError, Auditor};
@@ -206,7 +219,8 @@ let response = client
 
 ## Streaming
 
-When streaming large response bodies, you must mute the response audit with `AuditConfig::mute_response()`. This prevents the client from buffering the entire response payload into memory.
+When streaming large response bodies, you must mute the response audit with `AuditConfig::mute_response()`. This 
+prevents the client from buffering the entire response payload into memory.
 
 ```rust
 use api_client::{APIClient, AuditConfig, Headers, Method};
