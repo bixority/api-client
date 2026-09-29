@@ -166,7 +166,9 @@ fn test_audit_metadata() {
     assert_eq!(path, expected);
 
     // Test with root path having leading and trailing slashes
-    let meta_with_slashed_root = meta.clone().with_root_path(Some("/nested/root/dir/".to_string()));
+    let meta_with_slashed_root = meta
+        .clone()
+        .with_root_path(Some("/nested/root/dir/".to_string()));
     let path = meta_with_slashed_root.path(Method::Get, "response");
     let expected = format!(
         "nested/root/dir/{}/{}/{}/{}_{}_{}_response.txt",
