@@ -110,6 +110,7 @@ fn test_headers_builder() {
 fn test_audit_config() {
     let config = AuditConfig::new("test");
     assert_eq!(config.name, Some("test".to_string()));
+    assert_eq!(config.path, std::env::var("API_CLIENT_AUDIT_PATH").ok());
     assert!(config.audit_response_body);
 
     let config = config.mute_response();
@@ -126,6 +127,10 @@ fn test_audit_config() {
 
     let default_config = AuditConfig::default();
     assert_eq!(default_config.name, None);
+    assert_eq!(
+        default_config.path,
+        std::env::var("API_CLIENT_AUDIT_PATH").ok()
+    );
     assert!(default_config.audit_response_body);
 }
 

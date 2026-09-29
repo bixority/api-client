@@ -136,8 +136,8 @@ If no custom auditor is passed via `.with_auditor(...)`, the client automaticall
 ### Object Storage Auditor (S3 / Garage)
 
 `ObjectStorageAuditor` uploads audit files to any S3-compatible object storage. By default, 
-`ObjectStorageAuditor::new()` defaults to the `AuditConfig` path (initialized from `API_CLIENT_AUDIT_PATH`), which can 
-be overridden using `.with_audit_path(...)`.
+`ObjectStorageAuditor::new()` uses the path provided by `AuditConfig` / `AuditMetadata` without prepending any 
+additional prefix, which can optionally be overridden using `.with_audit_path(...)`.
 
 ```rust
 use api_client::APIClient;

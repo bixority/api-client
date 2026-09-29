@@ -4,7 +4,7 @@ use utils::{build_curl, cookie_header_for};
 pub use utils::{pretty_body, request_to_curl, shell_quote};
 
 use crate::cookies::CookieJar;
-use crate::types::{APIClientError, AuditConfig, AuditMetadata, HttpRequest, Method};
+use crate::types::{APIClientError, AuditMetadata, HttpRequest, Method};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use object_storage_client::ObjectStorageClient;
@@ -31,13 +31,11 @@ pub struct ObjectStorageAuditor {
 
 impl ObjectStorageAuditor {
     /// Create a new `ObjectStorageAuditor`.
-    ///
-    /// The audit path defaults to the path configured in `AuditConfig::default()`.
     #[must_use]
-    pub fn new(client: ObjectStorageClient) -> Self {
+    pub const fn new(client: ObjectStorageClient) -> Self {
         Self {
             client,
-            base_path: AuditConfig::default().path,
+            base_path: None,
         }
     }
 

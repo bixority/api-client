@@ -1,5 +1,6 @@
+use crate::APIClient;
 use crate::audit::{Auditor, ObjectStorageAuditor};
-use crate::{APIClient, AuditConfig};
+use crate::types::{AuditConfig, AuditMetadata, Method};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -7,12 +8,7 @@ async fn test_object_storage_auditor_default() {
     let client = object_storage_client::ObjectStorageClient::new();
     let auditor = ObjectStorageAuditor::new(client);
     let path = auditor.full_path("path");
-    if let Some(ref config_path) = AuditConfig::default().path {
-        let expected = format!("{}/path", config_path.trim_matches('/'));
-        assert_eq!(path, expected);
-    } else {
-        assert_eq!(path, "path");
-    }
+    assert_eq!(path, "path");
 }
 
 #[tokio::test]
@@ -52,4 +48,27 @@ fn test_object_storage_auditor_usage_pattern() -> Result<(), crate::APIClientErr
         .build()?;
 
     Ok(())
+}
+
+#[test]
+fn test_metadata_path_with_object_storage_auditor() {
+    let osc = object_storage_client::ObjectStorageClient::new();
+    let auditor = ObjectStorageAuditor::new(osc);
+
+    let audit_config = AuditConfig::new("sl_portal").with_path("s3://default/audit");
+    let meta = AuditMetadata::new(
+        audit_config
+            .name
+            .as_deref()
+            .expect("audit name is configured"),
+        "/system/login",
+    )
+    .with_root_path(audit_config.path);
+
+    let meta_path = meta.path(Method::Post, "response");
+    let full_path = auditor.full_path(&meta_path);
+
+    assert!(full_path.starts_with("s3://default/audit/"));
+    assert!(!full_path.starts_with("s3://default/audit/s3://default/audit/"));
+    assert!(full_path.contains("/sl_portal/system/login/POST_"));
 }
