@@ -136,9 +136,11 @@ impl APIClient {
         audit: Option<AuditConfig>,
     ) -> Result<HttpResponse, APIClientError> {
         let url = self.build_url(uri, query_params)?;
-        let audit_meta = audit
-            .as_ref()
-            .and_then(|a| a.name.as_ref().map(|name| AuditMetadata::new(name, uri)));
+        let audit_meta = audit.as_ref().and_then(|a| {
+            a.name
+                .as_ref()
+                .map(|name| AuditMetadata::new(name, uri).with_root_path(a.path.clone()))
+        });
 
         let req = HttpRequest {
             method,

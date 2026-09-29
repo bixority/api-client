@@ -232,3 +232,70 @@ async fn test_client_with_auditor() -> Result<(), crate::APIClientError> {
 
     Ok(())
 }
+
+#[cfg(feature = "audit")]
+#[tokio::test]
+async fn test_client_with_auditor_and_root_path() -> Result<(), crate::APIClientError> {
+    let mut mock_auditor = MockAuditor::new();
+
+    let now = chrono::Utc::now();
+    let date_str = now.format("%Y/%m/%d").to_string();
+    let yy_mm_dd = now.format("%y%m%d").to_string();
+
+    let request_pattern = format!(
+        r"^custom/root/{date_str}/unittest/resource/POST_{yy_mm_dd}_\d+_[a-f0-9]{{12}}_request\.txt$"
+    );
+    let response_pattern = format!(
+        r"^custom/root/{date_str}/unittest/resource/POST_{yy_mm_dd}_\d+_[a-f0-9]{{12}}_response\.txt$",
+    );
+
+    mock_auditor
+        .expect_write_audit_data()
+        .with(
+            predicate::str::is_match(request_pattern).expect("invalid request pattern regex"),
+            predicate::always(),
+        )
+        .times(1)
+        .returning(|_, _| async { Ok(()) }.boxed());
+
+    mock_auditor
+        .expect_write_audit_data()
+        .with(
+            predicate::str::is_match(response_pattern).expect("invalid response pattern regex"),
+            predicate::always(),
+        )
+        .times(1)
+        .returning(|_, _| async { Ok(()) }.boxed());
+
+    let mock_auditor_arc = Arc::new(mock_auditor);
+
+    // Setup a simple mock server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let url = format!("http://{addr}");
+
+    tokio::spawn(async move {
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+
+    let client = APIClient::new(url)
+        .with_auditor(mock_auditor_arc.clone())
+        .build()?;
+
+    let audit_config = AuditConfig::new("unittest").with_path("custom/root");
+    let _ = client
+        .request(
+            "/resource",
+            Method::Post,
+            Headers::new(),
+            Some(b"some body".to_vec()),
+            None,
+            Some(audit_config),
+        )
+        .await?;
+
+    Ok(())
+}

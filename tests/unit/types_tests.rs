@@ -114,6 +114,19 @@ fn test_audit_config() {
 
     let config = config.mute_response();
     assert!(!config.audit_response_body);
+
+    let config = config.with_path("custom/root");
+    assert_eq!(config.path, Some("custom/root".to_string()));
+
+    let config = config.path("another/root");
+    assert_eq!(config.path, Some("another/root".to_string()));
+
+    let config = config.with_name("new-name");
+    assert_eq!(config.name, Some("new-name".to_string()));
+
+    let default_config = AuditConfig::default();
+    assert_eq!(default_config.name, None);
+    assert!(default_config.audit_response_body);
 }
 
 #[cfg(feature = "audit")]
@@ -127,6 +140,48 @@ fn test_audit_metadata() {
     assert!(!meta.request_id.is_empty());
 
     let path = meta.path(Method::Get, "request");
+    let expected = format!(
+        "{}/{}/{}/{}_{}_{}_request.txt",
+        meta.date_path,
+        meta.audit_name,
+        meta.uri_path,
+        Method::Get,
+        meta.timestamp,
+        meta.request_id
+    );
+    assert_eq!(path, expected);
+
+    // Test with root path
+    let meta_with_root = meta.clone().with_root_path(Some("my-root".to_string()));
+    let path = meta_with_root.path(Method::Get, "request");
+    let expected = format!(
+        "my-root/{}/{}/{}/{}_{}_{}_request.txt",
+        meta.date_path,
+        meta.audit_name,
+        meta.uri_path,
+        Method::Get,
+        meta.timestamp,
+        meta.request_id
+    );
+    assert_eq!(path, expected);
+
+    // Test with root path having leading and trailing slashes
+    let meta_with_slashed_root = meta.clone().with_root_path(Some("/nested/root/dir/".to_string()));
+    let path = meta_with_slashed_root.path(Method::Get, "response");
+    let expected = format!(
+        "nested/root/dir/{}/{}/{}/{}_{}_{}_response.txt",
+        meta.date_path,
+        meta.audit_name,
+        meta.uri_path,
+        Method::Get,
+        meta.timestamp,
+        meta.request_id
+    );
+    assert_eq!(path, expected);
+
+    // Test with empty root path
+    let meta_empty_root = meta.clone().with_root_path(Some("///".to_string()));
+    let path = meta_empty_root.path(Method::Get, "request");
     let expected = format!(
         "{}/{}/{}/{}_{}_{}_request.txt",
         meta.date_path,
