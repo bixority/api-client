@@ -22,8 +22,9 @@ async fn test_object_storage_auditor_path_override() {
     assert_eq!(auditor.full_path("path"), "base/path");
     assert_eq!(auditor.full_path("/path"), "base/path");
 
-    let auditor_slashed = ObjectStorageAuditor::new(object_storage_client::ObjectStorageClient::new())
-        .with_audit_path("/nested/base/");
+    let auditor_slashed =
+        ObjectStorageAuditor::new(object_storage_client::ObjectStorageClient::new())
+            .with_audit_path("/nested/base/");
     assert_eq!(auditor_slashed.full_path("path"), "nested/base/path");
     assert_eq!(auditor_slashed.full_path("/path"), "nested/base/path");
 }
