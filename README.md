@@ -77,8 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Initialize ObjectStorageClient and ObjectStorageAuditor
     let storage_client = ObjectStorageClient::new();
-    let auditor = ObjectStorageAuditor::new(storage_client)
-        .with_audit_path("s3://audit-logs/api-client");
+    let auditor = ObjectStorageAuditor::new(storage_client);
 
     // 3. Build APIClient with the auditor and custom options
     let client = APIClient::new("https://httpbin.org".to_string())
@@ -135,9 +134,9 @@ If no custom auditor is passed via `.with_auditor(...)`, the client automaticall
 
 ### Object Storage Auditor (S3 / Garage)
 
-`ObjectStorageAuditor` uploads audit files to any S3-compatible object storage. By default, 
-`ObjectStorageAuditor::new()` uses the path provided by `AuditConfig` / `AuditMetadata` without prepending any 
-additional prefix, which can optionally be overridden using `.with_audit_path(...)`.
+`ObjectStorageAuditor` uploads audit files to any S3-compatible object storage. It writes each audit object under the 
+key provided by `AuditConfig` / `AuditMetadata` without adding any prefix of its own. The root path comes from 
+`AuditConfig` (set via `API_CLIENT_AUDIT_PATH` or `AuditConfig::with_path(...)`).
 
 ```rust
 use api_client::APIClient;
@@ -146,9 +145,7 @@ use object_storage_client::ObjectStorageClient;
 use std::sync::Arc;
 
 let storage_client = ObjectStorageClient::new();
-// Default audit path from API_CLIENT_AUDIT_PATH, or override with .with_audit_path(...)
-let auditor = ObjectStorageAuditor::new(storage_client)
-    .with_audit_path("s3://my-audit-bucket/audits");
+let auditor = ObjectStorageAuditor::new(storage_client);
 
 let client = APIClient::new("https://api.example.com")
     .with_auditor(Arc::new(auditor))
@@ -159,7 +156,7 @@ let client = APIClient::new("https://api.example.com")
 
 When an audit name is provided in `AuditConfig`, files are uploaded using the following structured path layout:
 ```text
-{base_path}/[{root_path}/]YYYY/MM/DD/{audit_name}/{uri_path}/{METHOD}_{YYMMDD_HHMMSS}_{request_id}_{request|response}.txt
+[{root_path}/]YYYY/MM/DD/{audit_name}/{uri_path}/{METHOD}_{YYMMDD_HHMMSS}_{request_id}_{request|response}.txt
 ```
 
 ### Custom Auditor

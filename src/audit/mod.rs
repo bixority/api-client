@@ -26,41 +26,13 @@ pub trait Auditor: Send + Sync {
 #[derive(Clone)]
 pub struct ObjectStorageAuditor {
     client: ObjectStorageClient,
-    base_path: Option<String>,
 }
 
 impl ObjectStorageAuditor {
     /// Create a new `ObjectStorageAuditor`.
     #[must_use]
     pub const fn new(client: ObjectStorageClient) -> Self {
-        Self {
-            client,
-            base_path: None,
-        }
-    }
-
-    /// Set or override the base audit path.
-    #[must_use]
-    pub fn with_audit_path(mut self, path: impl Into<String>) -> Self {
-        self.base_path = Some(path.into());
-        self
-    }
-
-    /// Return the full object storage path for a given relative path.
-    #[must_use]
-    pub fn full_path(&self, path: &str) -> String {
-        let trimmed_path = path.trim_start_matches('/');
-        self.base_path.as_deref().map_or_else(
-            || trimmed_path.to_owned(),
-            |base| {
-                let trimmed_base = base.trim_matches('/');
-                if trimmed_base.is_empty() {
-                    trimmed_path.to_owned()
-                } else {
-                    format!("{trimmed_base}/{trimmed_path}")
-                }
-            },
-        )
+        Self { client }
     }
 }
 
@@ -70,22 +42,17 @@ impl Auditor for ObjectStorageAuditor {
         path: &str,
         data: &[u8],
     ) -> BoxFuture<'static, Result<(), APIClientError>> {
-        let full_path = self.full_path(path);
+        let path = path.to_owned();
         let data = data.to_vec();
         let data_len = data.len();
         let client = self.client.clone();
         async move {
-            match client.put(&full_path, data).await {
-                Ok(()) => {
-                    info!("Audit data written to {}: {} bytes", full_path, data_len);
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!("Failed to write audit data to {}: {}", full_path, e);
-                    // We don't want to fail the request if auditing fails
-                    Ok(())
-                }
+            match client.put(&path, data).await {
+                Ok(()) => info!("Audit data written to {}: {} bytes", path, data_len),
+                Err(e) => warn!("Failed to write audit data to {}: {}", path, e),
             }
+            // We don't want to fail the request if auditing fails
+            Ok(())
         }
         .boxed()
     }

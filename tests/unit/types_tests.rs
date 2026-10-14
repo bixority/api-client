@@ -140,9 +140,9 @@ fn test_audit_metadata() {
     let meta = AuditMetadata::new("test-audit", "/some/path?query=1");
     assert_eq!(meta.audit_name, "test-audit");
     assert_eq!(meta.uri_path, "some/path?query=1");
-    assert!(!meta.date_path.is_empty());
-    assert!(!meta.timestamp.is_empty());
-    assert!(!meta.request_id.is_empty());
+    assert_ne!(meta.date_path, "");
+    assert_ne!(meta.timestamp, "");
+    assert_ne!(meta.request_id, "");
 
     let path = meta.path(Method::Get, "request");
     let expected = format!(
