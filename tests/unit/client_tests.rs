@@ -105,7 +105,7 @@ async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
 #[tokio::test]
 async fn test_request_without_audit() -> Result<(), crate::APIClientError> {
     use crate::types::{Headers, Method};
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // Setup a simple mock server
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -114,8 +114,11 @@ async fn test_request_without_audit() -> Result<(), crate::APIClientError> {
 
     tokio::spawn(async move {
         if let Ok((mut stream, _)) = listener.accept().await {
-            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer).await;
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
             let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.flush().await;
         }
     });
 
