@@ -9,7 +9,7 @@ use std::collections::HashMap;
 #[cfg(feature = "audit")]
 use std::sync::Arc;
 #[cfg(feature = "audit")]
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[test]
 fn test_build_url() -> Result<(), crate::APIClientError> {
@@ -212,8 +212,12 @@ async fn test_client_with_auditor() -> Result<(), crate::APIClientError> {
 
     tokio::spawn(async move {
         if let Ok((mut stream, _)) = listener.accept().await {
-            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            // Read the request first, or closing with it unread resets the client.
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer).await;
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
             let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.flush().await;
         }
     });
 
@@ -279,8 +283,12 @@ async fn test_client_with_auditor_and_root_path() -> Result<(), crate::APIClient
 
     tokio::spawn(async move {
         if let Ok((mut stream, _)) = listener.accept().await {
-            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+            // Read the request first, or closing with it unread resets the client.
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer).await;
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
             let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.flush().await;
         }
     });
 
