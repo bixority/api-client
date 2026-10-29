@@ -35,12 +35,18 @@ uuid = { version = "1.29", features = ["v4"] }
 mockall = "0.15"
 predicates = { version = "3.1", features = ["regex"] }
 tempfile = "3"
+testcontainers = { version = "0.28", default-features = false, features = ["aws-lc-rs"] }
 
 [features]
 audit = ["dep:object-storage-client"]
 
 [[example]]
 name = "audit"
+required-features = ["audit"]
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
 required-features = ["audit"]
 
 [lints.rust]
