@@ -48,3 +48,21 @@ fn test_request_to_curl() {
         "curl -i -X POST https://example.com/api -H 'x-test: value' -b session=123 -d 'body data'"
     );
 }
+
+#[test]
+fn audit_path_has_no_empty_segment_for_root_uri() {
+    use crate::types::AuditMetadata;
+    // A request to `/` has an empty URI path; that must not leave `//` in the key.
+    let meta = AuditMetadata::new("nvd_saml", "/");
+    let path = meta.path(Method::Post, "request");
+    assert!(!path.contains("//"), "{path}");
+    assert!(path.contains("/nvd_saml/POST_"), "{path}");
+}
+
+#[test]
+fn audit_path_keeps_nested_uri_segments() {
+    use crate::types::AuditMetadata;
+    let meta = AuditMetadata::new("nvd_saml", "/v1/items/");
+    let path = meta.path(Method::Get, "response");
+    assert!(path.contains("/nvd_saml/v1/items/GET_"), "{path}");
+}

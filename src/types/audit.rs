@@ -101,11 +101,17 @@ impl AuditMetadata {
 
     #[must_use]
     pub fn path(&self, method: Method, suffix: &str) -> String {
+        // Empty URI segments (a request to `/`) are skipped: an empty object
+        // path segment is refused by the object storage client.
+        let uri_segments = self
+            .uri_path
+            .split('/')
+            .filter(|segment| !segment.is_empty());
+        let mut dirs = vec![self.date_path.as_str(), self.audit_name.as_str()];
+        dirs.extend(uri_segments);
         let file_path = format!(
-            "{}/{}/{}/{}_{}_{}_{}.txt",
-            self.date_path,
-            self.audit_name,
-            self.uri_path,
+            "{}/{}_{}_{}_{}.txt",
+            dirs.join("/"),
             method,
             self.timestamp,
             self.request_id,
