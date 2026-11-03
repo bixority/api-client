@@ -146,7 +146,7 @@ impl APIClient {
             method,
             url,
             headers: headers.into_inner(),
-            body,
+            body: body.map(bytes::Bytes::from),
             audit,
             audit_meta,
         };
@@ -197,7 +197,7 @@ impl APIClient {
             method,
             url,
             headers: headers.into_inner(),
-            body,
+            body: body.map(bytes::Bytes::from),
         };
 
         let mut attempts = 0;

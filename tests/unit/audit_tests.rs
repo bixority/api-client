@@ -95,3 +95,31 @@ fn audit_path_keeps_nested_uri_segments() {
     let path = meta.path(Method::Get, "response");
     assert!(path.contains("/nvd_saml/v1/items/GET_"), "{path}");
 }
+
+#[test]
+fn curl_body_with_single_quotes_is_escaped() {
+    let curl = request_to_curl(
+        "https://example.com/a b",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(b"{\"k\":\"it's\"}"),
+        None,
+    );
+    // Hand-computed from the original implementation.
+    assert_eq!(
+        curl,
+        "curl -i -X POST 'https://example.com/a b' -d '{\"k\":\"it'\\''s\"}'"
+    );
+}
+
+#[test]
+fn curl_non_utf8_body_is_lossy() {
+    let curl = request_to_curl(
+        "https://example.com",
+        Method::Put,
+        &HeaderMap::new(),
+        Some(&[b'a', 0xff, b'b']),
+        None,
+    );
+    assert_eq!(curl, "curl -i -X PUT https://example.com -d 'a\u{fffd}b'");
+}

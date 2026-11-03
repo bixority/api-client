@@ -9,7 +9,7 @@ pub struct HttpRequest {
     pub(crate) method: Method,
     pub(crate) url: String,
     pub(crate) headers: HeaderMap,
-    pub(crate) body: Option<Vec<u8>>,
+    pub(crate) body: Option<bytes::Bytes>,
     #[cfg(feature = "audit")]
     pub(crate) audit: Option<AuditConfig>,
     #[cfg(feature = "audit")]

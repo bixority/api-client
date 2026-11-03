@@ -19,6 +19,16 @@ pub trait Auditor: Send + Sync {
         path: &str,
         data: &[u8],
     ) -> BoxFuture<'static, Result<(), APIClientError>>;
+
+    /// Like [`Self::write_audit_data`], but takes ownership of the data so an
+    /// implementation can store it without copying. The default borrows it.
+    fn write_audit_owned(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+    ) -> BoxFuture<'static, Result<(), APIClientError>> {
+        self.write_audit_data(path, &data)
+    }
 }
 
 /// Auditor that writes audit data to object storage.
@@ -42,8 +52,15 @@ impl Auditor for ObjectStorageAuditor {
         path: &str,
         data: &[u8],
     ) -> BoxFuture<'static, Result<(), APIClientError>> {
+        self.write_audit_owned(path, data.to_vec())
+    }
+
+    fn write_audit_owned(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+    ) -> BoxFuture<'static, Result<(), APIClientError>> {
         let path = path.to_owned();
-        let data = data.to_vec();
         let data_len = data.len();
         let client = self.client.clone();
         async move {
@@ -127,7 +144,7 @@ where
                 auditor.as_deref(),
                 req_audit_meta.as_ref(),
                 req_method,
-                &curl,
+                curl,
                 &log_prefix,
             )
             .await;
@@ -160,12 +177,12 @@ impl<S> Audit<S> {
         auditor: Option<&dyn Auditor>,
         meta: Option<&AuditMetadata>,
         method: Method,
-        curl: &str,
+        curl: String,
         log_prefix: &str,
     ) {
         if let (Some(auditor), Some(meta)) = (auditor, meta) {
             let path = meta.path(method, "request");
-            let _ = auditor.write_audit_data(&path, curl.as_bytes()).await;
+            let _ = auditor.write_audit_owned(&path, curl.into_bytes()).await;
         } else {
             info!("{log_prefix} request: {curl}");
         }
@@ -193,7 +210,7 @@ impl<S> Audit<S> {
 
         if let (Some(auditor), Some(meta)) = (auditor, meta) {
             let path = meta.path(method, "response");
-            let _ = auditor.write_audit_data(&path, pretty.as_bytes()).await;
+            let _ = auditor.write_audit_owned(&path, pretty.into_bytes()).await;
         } else {
             info!("{log_prefix} response: {status}\n{pretty}");
         }
