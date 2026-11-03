@@ -1,7 +1,26 @@
 use crate::cookies::CookieJar;
 use crate::types::{HttpRequest, Method};
-use reqwest::header::HeaderMap;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHORIZATION};
 use url::Url;
+
+/// What a credential is replaced with in an audited request.
+pub const REDACTED: &str = "<redacted>";
+
+/// Whether a header's value is a credential: `Authorization`,
+/// `Proxy-Authorization`, or any value marked sensitive.
+fn is_credential(name: &HeaderName, value: &HeaderValue) -> bool {
+    value.is_sensitive() || name == AUTHORIZATION || name == PROXY_AUTHORIZATION
+}
+
+/// A credential header's value with the credential replaced: its scheme
+/// (`Bearer`, `Basic`) is kept, so the audit still says how the request was
+/// authorized.
+fn redact_credential(value: &str) -> String {
+    match value.split_once(' ') {
+        Some((scheme, _)) if !scheme.is_empty() => format!("{scheme} {REDACTED}"),
+        _ => REDACTED.to_owned(),
+    }
+}
 
 /// POSIX-shell-quote a string.
 #[must_use]
@@ -29,7 +48,9 @@ pub fn shell_quote(s: &str) -> String {
     out
 }
 
-/// Build a `curl` command string that reproduces the given request.
+/// Build a `curl` command string that reproduces the given request, with the
+/// credentials of `Authorization`, `Proxy-Authorization` and any sensitive
+/// header replaced by [`REDACTED`].
 #[must_use]
 pub fn request_to_curl(
     url: &str,
@@ -48,7 +69,11 @@ pub fn request_to_curl(
 
     for (name, value) in headers {
         let value_str = value.to_str().unwrap_or("");
-        let header_line = format!("{}: {}", name.as_str(), value_str);
+        let header_line = if is_credential(name, value) {
+            format!("{}: {}", name.as_str(), redact_credential(value_str))
+        } else {
+            format!("{}: {}", name.as_str(), value_str)
+        };
         parts.push("-H".to_string());
         parts.push(shell_quote(&header_line));
     }

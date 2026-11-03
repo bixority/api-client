@@ -145,7 +145,9 @@ where
                     .await
                 }
                 Err(err) => {
-                    error!("{log_prefix} error response: {err:?}");
+                    // Without the URL's query: search parameters can carry
+                    // personal codes.
+                    error!("{log_prefix} error response: {}", err.redacted());
                     Err(err)
                 }
             }

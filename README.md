@@ -6,6 +6,8 @@ A high-performance, Tower-backed HTTP API client for Rust.
 
 - **Tower Stack**: Leverages the Tower ecosystem for middleware (load balancing, retrying, rate limiting, etc.).
 - **Audit Logging**: Built-in audit layer that logs requests as `curl` commands and pretty-prints JSON responses.
+  Credentials (`Authorization`, `Proxy-Authorization` and any header marked sensitive) are written as
+  `<redacted>`, keeping their scheme; retry and error log lines leave out the URL's query.
 - **Custom & S3 Auditors**: First-class support for storing audit logs in S3/Garage object storage or custom audit 
 backends.
 - **Concurrency Control**: Optional semaphore-based concurrency limiting.

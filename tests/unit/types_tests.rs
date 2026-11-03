@@ -200,3 +200,38 @@ fn test_audit_metadata() {
     );
     assert_eq!(path, expected);
 }
+
+#[tokio::test]
+async fn a_redacted_request_error_has_no_url_query_and_keeps_its_causes() {
+    // Nothing listens on port 1: the connection is refused.
+    let err = reqwest::Client::new()
+        .get("http://127.0.0.1:1/fhir/api/PractitionerRole/_search?practitioner.identifier.value=P12345")
+        .send()
+        .await
+        .expect_err("port 1 refuses connections");
+    let err = crate::APIClientError::from(err);
+    assert!(err.to_string().contains("P12345"), "the premise: {err}");
+
+    let text = err.redacted();
+
+    assert!(!text.contains("P12345"), "{text}");
+    assert!(!text.contains('?'), "{text}");
+    assert!(
+        text.starts_with(
+            "HTTP request failed: error sending request for url \
+             (http://127.0.0.1:1/fhir/api/PractitionerRole/_search)"
+        ),
+        "{text}"
+    );
+    // The causes below reqwest's error (the refused connection) are kept.
+    assert!(
+        text.len() > "HTTP request failed: error sending request for url ".len() + 60,
+        "{text}"
+    );
+}
+
+#[test]
+fn a_redacted_error_without_a_url_is_its_text() {
+    let err = crate::APIClientError::ConcurrencyClosed;
+    assert_eq!(err.redacted(), "concurrency limiter closed");
+}

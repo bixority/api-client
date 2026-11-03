@@ -50,6 +50,35 @@ fn test_request_to_curl() {
 }
 
 #[test]
+fn credentials_are_redacted_in_the_curl_line() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer eyJhbGciOiJSUzI1NiJ9.secret"),
+    );
+    headers.insert(
+        reqwest::header::PROXY_AUTHORIZATION,
+        HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+    );
+    let mut marked = HeaderValue::from_static("api-key-123");
+    marked.set_sensitive(true);
+    headers.insert(HeaderName::from_static("x-api-key"), marked);
+    headers.insert(
+        HeaderName::from_static("x-test"),
+        HeaderValue::from_static("value"),
+    );
+
+    let curl = request_to_curl("https://example.com/api", Method::Get, &headers, None, None);
+
+    assert_eq!(
+        curl,
+        "curl -i -X GET https://example.com/api -H 'authorization: Bearer <redacted>' \
+         -H 'proxy-authorization: Basic <redacted>' -H 'x-api-key: <redacted>' \
+         -H 'x-test: value'"
+    );
+}
+
+#[test]
 fn audit_path_has_no_empty_segment_for_root_uri() {
     use crate::types::AuditMetadata;
     // A request to `/` has an empty URI path; that must not leave `//` in the key.

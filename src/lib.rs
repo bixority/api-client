@@ -162,7 +162,8 @@ impl APIClient {
                 }
                 Ok(response) => return Ok(response),
                 Err(e) if Self::should_retry_error(&e, method, attempts) => {
-                    self.wait_for_retry(method, uri, &e, attempts).await;
+                    self.wait_for_retry(method, uri, e.redacted(), attempts)
+                        .await;
                 }
                 Err(e) => return Err(e),
             }
@@ -210,7 +211,8 @@ impl APIClient {
                 }
                 Ok(response) => return Ok(response),
                 Err(e) if Self::should_retry_error(&e, method, attempts) => {
-                    self.wait_for_retry(method, uri, &e, attempts).await;
+                    self.wait_for_retry(method, uri, e.redacted(), attempts)
+                        .await;
                 }
                 Err(e) => return Err(e),
             }
