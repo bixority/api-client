@@ -1,7 +1,8 @@
 pub mod utils;
 
+use bytes::Bytes;
 use utils::{build_curl, cookie_header_for};
-pub use utils::{pretty_body, request_to_curl, shell_quote};
+pub use utils::{pretty_body, request_to_curl, request_to_curl_chunks, shell_quote};
 
 use crate::cookies::CookieJar;
 use crate::types::{APIClientError, AuditMetadata, HttpRequest, Method};
@@ -28,6 +29,27 @@ pub trait Auditor: Send + Sync {
         data: Vec<u8>,
     ) -> BoxFuture<'static, Result<(), APIClientError>> {
         self.write_audit_data(path, &data)
+    }
+
+    /// Like [`Self::write_audit_owned`], but the data comes as consecutive
+    /// pieces, so a large request body can be audited without first joining
+    /// it into one buffer. The stored object is the pieces concatenated.
+    ///
+    /// The default joins the pieces into one `Vec` and calls
+    /// [`Self::write_audit_owned`]; an implementation that can stream should
+    /// override it.
+    fn write_audit_chunks(
+        &self,
+        path: &str,
+        chunks: Vec<Bytes>,
+    ) -> BoxFuture<'static, Result<(), APIClientError>> {
+        let total = chunks.iter().map(Bytes::len).sum();
+        let mut data = Vec::with_capacity(total);
+        for c in &chunks {
+            data.extend_from_slice(c);
+        }
+        drop(chunks);
+        self.write_audit_owned(path, data)
     }
 }
 
@@ -73,6 +95,57 @@ impl Auditor for ObjectStorageAuditor {
         }
         .boxed()
     }
+
+    fn write_audit_chunks(
+        &self,
+        path: &str,
+        chunks: Vec<Bytes>,
+    ) -> BoxFuture<'static, Result<(), APIClientError>> {
+        let path = path.to_owned();
+        let data_len: usize = chunks.iter().map(Bytes::len).sum();
+        let client = self.client.clone();
+        async move {
+            // The http(s) backend has no multipart upload: `put_stream`
+            // would buffer the object anyway and refuses one above 1 GiB,
+            // which `put` stores. So it gets the joined object, as before.
+            if is_http(&path) {
+                let mut data = Vec::with_capacity(data_len);
+                for c in chunks {
+                    data.extend_from_slice(&c);
+                }
+                match client.put(&path, data).await {
+                    Ok(()) => info!("Audit data written to {}: {} bytes", path, data_len),
+                    Err(e) => warn!("Failed to write audit data to {}: {}", path, e),
+                }
+                return Ok(());
+            }
+            let stream = futures::stream::iter(chunks.into_iter().map(Ok));
+            match client.put_stream(&path, stream).await {
+                Ok(()) => info!("Audit data written to {}: {} bytes", path, data_len),
+                Err(e) => warn!("Failed to write audit data to {}: {}", path, e),
+            }
+            // We don't want to fail the request if auditing fails
+            Ok(())
+        }
+        .boxed()
+    }
+}
+
+/// Whether `url` is an `http(s)://` address.
+fn is_http(url: &str) -> bool {
+    url.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
+}
+
+/// The largest response body audited pretty-printed. Above it the body is
+/// audited as received, with no `Value` tree or pretty copy.
+const PRETTY_MAX: usize = 256 * 1024;
+
+/// The request as it is audited: pieces for an auditor, a curl line to log.
+enum AuditRequest {
+    Chunks(Vec<Bytes>),
+    Line(String),
 }
 
 /// Audit layer (middleware factory).
@@ -128,7 +201,17 @@ where
         let mut inner = self.inner.clone();
         let auditor = self.auditor.clone();
         let cookie_header = cookie_header_for(&self.cookies, &req.url);
-        let curl = build_curl(&req, cookie_header.as_deref());
+        let audit_request = if auditor.is_some() && req.audit_meta.is_some() {
+            AuditRequest::Chunks(request_to_curl_chunks(
+                &req.url,
+                req.method,
+                &req.headers,
+                req.body.as_ref(),
+                cookie_header.as_deref(),
+            ))
+        } else {
+            AuditRequest::Line(build_curl(&req, cookie_header.as_deref()))
+        };
         let audit_response_body = req.audit.as_ref().is_none_or(|a| a.audit_response_body);
         let log_prefix = req
             .audit
@@ -144,7 +227,7 @@ where
                 auditor.as_deref(),
                 req_audit_meta.as_ref(),
                 req_method,
-                curl,
+                audit_request,
                 &log_prefix,
             )
             .await;
@@ -177,14 +260,20 @@ impl<S> Audit<S> {
         auditor: Option<&dyn Auditor>,
         meta: Option<&AuditMetadata>,
         method: Method,
-        curl: String,
+        request: AuditRequest,
         log_prefix: &str,
     ) {
-        if let (Some(auditor), Some(meta)) = (auditor, meta) {
-            let path = meta.path(method, "request");
-            let _ = auditor.write_audit_owned(&path, curl.into_bytes()).await;
-        } else {
-            info!("{log_prefix} request: {curl}");
+        match (auditor, meta, request) {
+            (Some(auditor), Some(meta), AuditRequest::Chunks(chunks)) => {
+                let path = meta.path(method, "request");
+                let _ = auditor.write_audit_chunks(&path, chunks).await;
+            }
+            (Some(auditor), Some(meta), AuditRequest::Line(curl)) => {
+                let path = meta.path(method, "request");
+                let _ = auditor.write_audit_owned(&path, curl.into_bytes()).await;
+            }
+            (_, _, AuditRequest::Line(curl)) => info!("{log_prefix} request: {curl}"),
+            (_, _, AuditRequest::Chunks(_)) => {}
         }
     }
 
@@ -206,13 +295,21 @@ impl<S> Audit<S> {
         let version = resp.version();
         let headers = resp.headers().clone();
         let body = resp.bytes().await?;
-        let pretty = pretty_body(&body);
 
         if let (Some(auditor), Some(meta)) = (auditor, meta) {
             let path = meta.path(method, "response");
-            let _ = auditor.write_audit_owned(&path, pretty.into_bytes()).await;
-        } else {
+            if body.len() <= PRETTY_MAX {
+                let pretty = pretty_body(&body);
+                let _ = auditor.write_audit_owned(&path, pretty.into_bytes()).await;
+            } else {
+                let _ = auditor.write_audit_chunks(&path, vec![body.clone()]).await;
+            }
+        } else if body.len() <= PRETTY_MAX {
+            let pretty = pretty_body(&body);
             info!("{log_prefix} response: {status}\n{pretty}");
+        } else {
+            let text = String::from_utf8_lossy(&body);
+            info!("{log_prefix} response: {status}\n{text}");
         }
 
         let mut builder = http::Response::builder().status(status).version(version);

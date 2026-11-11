@@ -310,3 +310,197 @@ async fn test_client_with_auditor_and_root_path() -> Result<(), crate::APIClient
 
     Ok(())
 }
+
+#[cfg(feature = "audit")]
+#[tokio::test]
+async fn default_write_audit_chunks_delivers_the_curl_bytes() {
+    use crate::audit::{Auditor, request_to_curl, request_to_curl_chunks};
+    use bytes::Bytes;
+    use futures::future::BoxFuture;
+    use std::sync::Mutex;
+
+    type Writes = Vec<(String, Vec<u8>)>;
+    #[derive(Default)]
+    struct Recorder(Arc<Mutex<Writes>>);
+    impl Auditor for Recorder {
+        fn write_audit_data(
+            &self,
+            path: &str,
+            data: &[u8],
+        ) -> BoxFuture<'static, Result<(), crate::APIClientError>> {
+            self.0
+                .lock()
+                .expect("lock")
+                .push((path.to_owned(), data.to_vec()));
+            async { Ok(()) }.boxed()
+        }
+    }
+
+    let recorder = Recorder::default();
+    let body = Bytes::from_static(b"{\"k\":\"it's\"}");
+    let headers = reqwest::header::HeaderMap::new();
+    let chunks = request_to_curl_chunks(
+        "https://example.com/x",
+        Method::Post,
+        &headers,
+        Some(&body),
+        None,
+    );
+    recorder
+        .write_audit_chunks("p/request.txt", chunks)
+        .await
+        .expect("write");
+
+    let expected = request_to_curl(
+        "https://example.com/x",
+        Method::Post,
+        &headers,
+        Some(&body),
+        None,
+    );
+    let got = recorder.0.lock().expect("lock");
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, "p/request.txt");
+    assert_eq!(got[0].1, expected.into_bytes());
+}
+
+#[cfg(feature = "audit")]
+mod response_audit {
+    use super::*;
+    use crate::audit::{Auditor, pretty_body};
+    use bytes::Bytes;
+    use futures::future::BoxFuture;
+    use std::sync::Mutex;
+
+    const PRETTY_MAX: usize = 256 * 1024;
+
+    type Writes = Vec<(String, Vec<u8>)>;
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<Writes>>);
+    impl Auditor for Recorder {
+        fn write_audit_data(
+            &self,
+            path: &str,
+            data: &[u8],
+        ) -> BoxFuture<'static, Result<(), crate::APIClientError>> {
+            self.0
+                .lock()
+                .expect("lock")
+                .push((path.to_owned(), data.to_vec()));
+            async { Ok(()) }.boxed()
+        }
+    }
+
+    /// A compact JSON array of exactly `len` bytes.
+    fn json_of_len(len: usize) -> Vec<u8> {
+        let mut s = String::from("[");
+        while s.len() + 2 < len {
+            if s.len() > 1 {
+                s.push(',');
+            }
+            s.push('1');
+        }
+        // Pad with spaces before the closing bracket to hit the exact length.
+        while s.len() + 1 < len {
+            s.push(' ');
+        }
+        s.push(']');
+        assert_eq!(s.len(), len);
+        s.into_bytes()
+    }
+
+    /// Serves `body` once; audits the call; returns what the caller got and
+    /// what the auditor stored under a `_response.txt` path.
+    async fn run(body: Vec<u8>, mute: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let served = body;
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    served.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&served).await;
+                let _ = stream.flush().await;
+            }
+        });
+
+        let recorder = Recorder::default();
+        let client = APIClient::new(url)
+            .with_auditor(Arc::new(recorder.clone()))
+            .build()
+            .expect("client");
+        let mut cfg = AuditConfig::new("unittest");
+        if mute {
+            cfg = cfg.mute_response();
+        }
+        let response = client
+            .request(
+                "/resource",
+                Method::Post,
+                Headers::new(),
+                Some(b"x".to_vec()),
+                None,
+                Some(cfg),
+            )
+            .await
+            .expect("request");
+        let got = response.bytes().await.expect("bytes").to_vec();
+        let stored = recorder
+            .0
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(p, _)| p.ends_with("_response.txt"))
+            .map(|(_, d)| d.clone())
+            .collect();
+        (got, stored)
+    }
+
+    #[tokio::test]
+    async fn response_of_pretty_max_is_audited_pretty() {
+        let body = json_of_len(PRETTY_MAX);
+        let (got, stored) = run(body.clone(), false).await;
+        assert_eq!(got, body);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0], pretty_body(&Bytes::from(body)).into_bytes());
+    }
+
+    #[tokio::test]
+    async fn response_above_pretty_max_is_audited_as_received() {
+        let body = json_of_len(PRETTY_MAX + 1);
+        let (got, stored) = run(body.clone(), false).await;
+        assert_eq!(got, body);
+        assert_eq!(stored, vec![body]);
+    }
+
+    #[tokio::test]
+    async fn large_non_utf8_response_is_audited_as_raw_bytes() {
+        let body: Vec<u8> = (0..PRETTY_MAX + 1000)
+            .map(|i| u8::try_from(i % 256).expect("fits"))
+            .collect();
+        let (got, stored) = run(body.clone(), false).await;
+        assert_eq!(got, body);
+        assert_eq!(stored, vec![body]);
+    }
+
+    #[tokio::test]
+    async fn muted_response_writes_no_response_object() {
+        let body = json_of_len(PRETTY_MAX + 1);
+        let (got, stored) = run(body.clone(), true).await;
+        assert_eq!(got, body);
+        assert_eq!(stored.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_response_bytes_returns_the_body() {
+        let (got, _) = run(b"hello".to_vec(), true).await;
+        assert_eq!(got, b"hello");
+    }
+}

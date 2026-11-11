@@ -56,6 +56,15 @@ impl HttpResponse {
         self.inner.text().await.map_err(APIClientError::from)
     }
 
+    /// Consume the response, returning the body as bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the body cannot be read or the response was already consumed.
+    pub async fn bytes(self) -> Result<Bytes, APIClientError> {
+        self.inner.bytes().await.map_err(APIClientError::from)
+    }
+
     /// Consume the response, returning the body as a stream of bytes.
     ///
     /// # Errors

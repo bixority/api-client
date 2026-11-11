@@ -127,7 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The client includes an auditing layer that captures:
 1. **Request:** Reconstructs the outgoing request as an executable `curl` command.
-2. **Response:** Logs response status and pretty-prints JSON bodies (or raw text).
+2. **Response:** Logs response status and pretty-prints JSON bodies (or raw text). A body
+   larger than 256 KiB is audited as received, without parsing or reformatting it.
 
 ### Default Tracing Auditor
 

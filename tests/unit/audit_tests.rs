@@ -1,5 +1,6 @@
-use crate::audit::{pretty_body, request_to_curl, shell_quote};
+use crate::audit::{pretty_body, request_to_curl, request_to_curl_chunks, shell_quote};
 use crate::types::Method;
+use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 #[test]
@@ -122,4 +123,128 @@ fn curl_non_utf8_body_is_lossy() {
         None,
     );
     assert_eq!(curl, "curl -i -X PUT https://example.com -d 'a\u{fffd}b'");
+}
+
+fn joined(chunks: &[Bytes]) -> Vec<u8> {
+    chunks.iter().flat_map(|c| c.iter().copied()).collect()
+}
+
+#[test]
+fn curl_chunks_concatenate_to_request_to_curl() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer eyJhbGciOiJSUzI1NiJ9.secret"),
+    );
+    headers.insert(
+        reqwest::header::PROXY_AUTHORIZATION,
+        HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+    );
+    let mut marked = HeaderValue::from_static("api-key-123");
+    marked.set_sensitive(true);
+    headers.insert(HeaderName::from_static("x-api-key"), marked);
+    headers.insert(
+        HeaderName::from_static("x-test"),
+        HeaderValue::from_static("it's"),
+    );
+
+    let big = format!("{{\"k\":\"{}'x\"}}", "a".repeat(1 << 20)).into_bytes();
+    let bodies: Vec<Option<Vec<u8>>> = vec![
+        None,
+        Some(vec![]),
+        Some(b"safe-only_body.1/2:3=4@5,6+7".to_vec()),
+        Some(br#"{"a":1,"b":[true,null]}"#.to_vec()),
+        Some(b"'start".to_vec()),
+        Some(b"mid'dle".to_vec()),
+        Some(b"end'".to_vec()),
+        Some(b"two''in a row".to_vec()),
+        Some(b"'".to_vec()),
+        Some(b"'''".to_vec()),
+        Some(
+            "za\u{17c}\u{f3}\u{142}\u{107} 'g\u{119}\u{15b}l\u{105}' \u{1F600}"
+                .as_bytes()
+                .to_vec(),
+        ),
+        Some(vec![b'a', 0xff, b'b']),
+        Some(vec![b'a', 0xff, b'\'', b'b']),
+        Some(big),
+    ];
+    for hdrs in [&HeaderMap::new(), &headers] {
+        for cookies in [None, Some("session=1; x=it's")] {
+            for body in &bodies {
+                let bytes = body.clone().map(Bytes::from);
+                let expected = request_to_curl(
+                    "https://example.com/a b",
+                    Method::Post,
+                    hdrs,
+                    bytes.as_deref(),
+                    cookies,
+                );
+                let chunks = request_to_curl_chunks(
+                    "https://example.com/a b",
+                    Method::Post,
+                    hdrs,
+                    bytes.as_ref(),
+                    cookies,
+                );
+                assert!(
+                    joined(&chunks) == expected.as_bytes(),
+                    "mismatch for body of {:?} bytes",
+                    body.as_ref().map(Vec::len)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn curl_chunks_share_the_body_memory() {
+    let body = Bytes::from(format!(r#"{{"a":"{}","c":[1,2,3]}}"#, "b".repeat(100_000)));
+    let chunks = request_to_curl_chunks(
+        "https://example.com",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(&body),
+        None,
+    );
+    // Head, opening quote, the body, closing quote.
+    assert_eq!(chunks.len(), 4, "{chunks:?}");
+    assert_eq!(chunks[2].as_ptr(), body.as_ptr());
+    assert_eq!(chunks[2].len(), body.len());
+}
+
+#[test]
+fn curl_chunks_many_quotes_stay_few_pieces() {
+    let body = Bytes::from("it's a 'test' ".repeat(50_000));
+    let chunks = request_to_curl_chunks(
+        "https://example.com",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(&body),
+        None,
+    );
+    assert_eq!(chunks.len(), 2, "{chunks:?}");
+    let joined: Vec<u8> = chunks.iter().flat_map(|c| c.to_vec()).collect();
+    let expected = request_to_curl(
+        "https://example.com",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(body.as_ref()),
+        None,
+    );
+    assert_eq!(joined, expected.into_bytes());
+}
+
+#[test]
+fn curl_chunks_safe_body_is_one_shared_piece() {
+    let body = Bytes::from_static(b"safe-body");
+    let chunks = request_to_curl_chunks(
+        "https://example.com",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(&body),
+        None,
+    );
+    assert_eq!(chunks.len(), 2, "{chunks:?}");
+    assert_eq!(chunks[1].as_ptr(), body.as_ptr());
 }

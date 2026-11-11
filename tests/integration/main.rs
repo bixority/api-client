@@ -11,6 +11,7 @@ mod harness;
 use api_client::{APIClient, AuditConfig, Headers, Method};
 use harness::{Store, audited_client, mock_server};
 use object_storage_client::ObjectStorageClient;
+use std::fmt::Write as _;
 use std::time::Duration;
 
 const AUDIT_NAME: &str = "it_audit";
@@ -109,4 +110,96 @@ async fn failing_store_does_not_fail_the_request() {
             .expect("request must not hang on a failing store");
     assert_eq!(status, 200);
     assert_eq!(body, "response-body-marker");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn large_body_with_quotes_is_stored_byte_identical() {
+    let store = Store::garage().await;
+    let mock = mock_server("ok").await;
+    let client = audited_client(&mock.base_url, store.vars());
+    let reader = ObjectStorageClient::with_vars(store.vars());
+    let root = store.root();
+
+    // Above 8 MiB, so the audit is a multipart upload; with single quotes.
+    let mut body = String::from("{\"items\":[");
+    let mut i = 0;
+    while body.len() < 9 * 1024 * 1024 {
+        if i > 0 {
+            body.push(',');
+        }
+        let _ = write!(body, "\"it's #{i} \u{142}\"");
+        i += 1;
+    }
+    body.push_str("]}");
+
+    // The mock answers after one read, so the upload of the body may be cut
+    // short; the request audit is written before the call and is what is checked.
+    let _ = client
+        .request(
+            URI,
+            Method::Post,
+            Headers::new().content_type("application/json"),
+            Some(body.clone().into_bytes()),
+            None,
+            Some(AuditConfig::new(AUDIT_NAME).with_path(&root)),
+        )
+        .await;
+
+    let key = find_record(&reader, &root, "_request.txt").await;
+    let stored = reader
+        .get(&format!("{root}/{key}"))
+        .await
+        .expect("read audit record");
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    let expected = api_client::audit::request_to_curl(
+        &format!("{}{URI}", mock.base_url),
+        Method::Post,
+        &headers,
+        Some(body.as_bytes()),
+        None,
+    );
+    assert_eq!(stored.len(), expected.len());
+    assert!(
+        stored.as_ref() == expected.as_bytes(),
+        "stored object differs"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn large_response_is_stored_byte_identical() {
+    let store = Store::garage().await;
+    let reader = ObjectStorageClient::with_vars(store.vars());
+    let root = store.root();
+
+    // Above the 256 KiB pretty limit: audited as received, not re-rendered
+    // (compact JSON would differ from its pretty form).
+    let mut body = String::from("{\"items\":[");
+    let mut i = 0;
+    while body.len() < 400 * 1024 {
+        if i > 0 {
+            body.push(',');
+        }
+        let _ = write!(body, "\"it's #{i} \u{142}\"");
+        i += 1;
+    }
+    body.push_str("]}");
+
+    let mock = mock_server(Box::leak(body.clone().into_boxed_str())).await;
+    let client = audited_client(&mock.base_url, store.vars());
+    let (status, got) = send(&client, &root).await;
+    assert_eq!(status, 200);
+    assert_eq!(got, body, "caller still gets the body");
+
+    let key = find_record(&reader, &root, "_response.txt").await;
+    let stored = reader
+        .get(&format!("{root}/{key}"))
+        .await
+        .expect("read audit record");
+    assert_eq!(stored.len(), body.len());
+    assert!(stored.as_ref() == body.as_bytes(), "stored object differs");
 }
