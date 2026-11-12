@@ -17,7 +17,7 @@ name = "api_client"
 
 [dependencies]
 bytes = "1.12"
-chrono = "0.4"
+chrono = { version = "0.4", optional = true }
 futures = "0.3"
 http = "1.5"
 object-storage-client = { version = "0.4", registry = "bixority-codeberg", optional = true }
@@ -29,7 +29,7 @@ tokio = { version = "1.54", features = ["full"] }
 tower = "0.5"
 tracing = "0.1"
 url = "2.5"
-uuid = { version = "1.29", features = ["v4"] }
+uuid = { version = "1.29", features = ["v4"], optional = true }
 
 [dev-dependencies]
 mockall = "0.15"
@@ -38,7 +38,7 @@ tempfile = "3"
 testcontainers = { version = "0.28", default-features = false, features = ["aws-lc-rs"] }
 
 [features]
-audit = ["dep:object-storage-client"]
+audit = ["dep:object-storage-client", "dep:chrono", "dep:uuid"]
 
 [[example]]
 name = "audit"
