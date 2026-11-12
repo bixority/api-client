@@ -2,14 +2,14 @@
 authors = ["Olegs Korsaks <olegs.korsaks@bixority.com>"]
 categories = ["api-client"]
 description = "API client"
-rust-version = "1.99"
+rust-version = "1.100"
 edition = "2024"
 keywords = ["api", "client"]
 license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.1.3"
+version = "0.1.4"
 
 [lib]
 name = "api_client"
