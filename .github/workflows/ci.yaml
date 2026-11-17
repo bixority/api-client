@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
   release:
     types: [ published ]
 
@@ -37,6 +40,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test
+      - name: Run tests with audit-core
+        run: cargo test --features audit-core --lib
+      - name: Run tests with audit
+        run: cargo test --features audit --lib
+      - name: Check without default features
+        run: cargo check --no-default-features
+      - name: Run integration tests
+        if: runner.os == 'Linux'
+        run: cargo test --features audit --test integration
 
   lint:
     name: Lint
@@ -51,6 +63,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
+      - name: Clippy with audit
+        run: cargo clippy --all-targets --features audit -- -D warnings -W clippy::pedantic
 
   publish-crate-to-codeberg:
     name: Publish Crate to Codeberg

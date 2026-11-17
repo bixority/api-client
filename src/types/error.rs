@@ -1,6 +1,7 @@
 use std::error::Error as _;
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum APIClientError {
     #[error("HTTP request failed: {0}")]
     Request(#[from] reqwest::Error),
@@ -19,6 +20,15 @@ pub enum APIClientError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("timed out waiting for a concurrency permit")]
+    QueueTimeout,
+
+    #[error("invalid header: {0}")]
+    InvalidHeader(String),
+
+    #[error("JSON serialization error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 impl APIClientError {

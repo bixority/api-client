@@ -1,4 +1,4 @@
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 use crate::{AuditConfig, AuditMetadata};
 use crate::{Headers, HttpResponse, Method, StatusCode};
 use futures::StreamExt;
@@ -12,7 +12,7 @@ async fn test_http_response_methods() {
         .body(reqwest::Body::from("{\"result\":\"ok\"}"))
         .expect("Failed to build mock response");
     let resp = reqwest::Response::from(http_resp);
-    let my_resp = HttpResponse::from_reqwest(resp);
+    let my_resp = HttpResponse::from_reqwest(resp, None);
 
     assert_eq!(my_resp.status().as_u16(), 200);
     assert_eq!(
@@ -30,7 +30,7 @@ async fn test_http_response_methods() {
         .body(reqwest::Body::from("{\"result\":\"ok\"}"))
         .expect("Failed to build mock JSON response");
     let resp = reqwest::Response::from(http_resp);
-    let my_resp = HttpResponse::from_reqwest(resp);
+    let my_resp = HttpResponse::from_reqwest(resp, None);
     let json: serde_json::Value = my_resp.json().await.expect("Failed to parse JSON");
     assert_eq!(json["result"], "ok");
 
@@ -40,7 +40,7 @@ async fn test_http_response_methods() {
         .body(reqwest::Body::from("data"))
         .expect("Failed to build mock stream response");
     let resp = reqwest::Response::from(http_resp);
-    let my_resp = HttpResponse::from_reqwest(resp);
+    let my_resp = HttpResponse::from_reqwest(resp, None);
     let mut stream = my_resp.bytes_stream().expect("Failed to get bytes stream");
     let bytes = stream
         .next()
@@ -105,7 +105,7 @@ fn test_headers_builder() {
     );
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 #[test]
 fn test_audit_config() {
     let config = AuditConfig::new("test");
@@ -134,7 +134,7 @@ fn test_audit_config() {
     assert!(default_config.audit_response_body);
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 #[test]
 fn test_audit_metadata() {
     let meta = AuditMetadata::new("test-audit", "/some/path?query=1");

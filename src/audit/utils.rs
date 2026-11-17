@@ -1,7 +1,9 @@
 use crate::cookies::CookieJar;
 use crate::types::{HttpRequest, Method};
 use bytes::Bytes;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHORIZATION};
+use reqwest::header::{
+    AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHORIZATION, SET_COOKIE,
+};
 use url::Url;
 
 /// What a credential is replaced with in an audited request.
@@ -142,7 +144,10 @@ pub fn request_to_curl(
     let mut out = curl_head(url, method, headers, cookies, extra);
     if let Some(b) = body {
         out.push_str(" -d ");
-        push_quoted(&mut out, &[&String::from_utf8_lossy(b)]);
+        match std::str::from_utf8(b) {
+            Ok(text) => push_quoted(&mut out, &[text]),
+            Err(_) => push_quoted(&mut out, &[&format!("<{} bytes, not UTF-8>", b.len())]),
+        }
     }
     out
 }
@@ -150,6 +155,8 @@ pub fn request_to_curl(
 /// Body spans at least this long are audited as slices of the body: the
 /// object storage uploader copies shorter chunks into its own blocks.
 const ZERO_COPY_MIN: usize = 64 * 1024;
+/// The largest owned piece made from a body that is not valid UTF-8.
+const WINDOW: usize = 64 * 1024;
 /// A single quote inside a single-quoted shell word.
 const QUOTE_ESCAPE: &[u8] = br"'\''";
 
@@ -164,8 +171,12 @@ fn for_each_span(text: &str, mut span: impl FnMut(std::ops::Range<usize>, bool))
     span(start..text.len(), false);
 }
 
-/// Same command as [`request_to_curl`], as pieces whose concatenation is
-/// byte-identical to `request_to_curl(..).into_bytes()`.
+/// Same command as [`request_to_curl`], as pieces.
+///
+/// Their concatenation is byte-identical to `request_to_curl(..)`, except for
+/// a body that is not valid UTF-8: the log line shows only its size, while the
+/// stored one keeps the body, lossily converted (each invalid sequence becomes
+/// U+FFFD) in windows of at most [`WINDOW`] bytes.
 ///
 /// Everything before the body is one owned piece. A valid UTF-8 body is not
 /// copied: it is returned as zero-copy slices of `body` (cut at each single
@@ -188,10 +199,7 @@ pub fn request_to_curl_chunks(
     let mut chunks = vec![Bytes::from(head)];
 
     let Ok(text) = std::str::from_utf8(body) else {
-        let lossy = String::from_utf8_lossy(body);
-        let mut quoted = String::with_capacity(lossy.len() + 16);
-        push_quoted(&mut quoted, &[&lossy]);
-        chunks.push(Bytes::from(quoted));
+        push_lossy_quoted(body, &mut chunks);
         return chunks;
     };
 
@@ -241,9 +249,62 @@ pub fn request_to_curl_chunks(
     chunks
 }
 
-/// Render a response body for auditing: pretty-printed when it is valid JSON
-/// (so FHIR `OperationOutcome`/`Bundle` job results are readable), otherwise the
-/// raw bytes as a lossy UTF-8 string.
+/// Append `piece` to the window `buf`, handing each full window to `chunks`.
+fn put_windowed(buf: &mut Vec<u8>, chunks: &mut Vec<Bytes>, mut piece: &[u8]) {
+    while !piece.is_empty() {
+        let take = piece.len().min(WINDOW - buf.len());
+        buf.extend_from_slice(&piece[..take]);
+        piece = &piece[take..];
+        if buf.len() == WINDOW {
+            let next = Vec::with_capacity(WINDOW);
+            chunks.push(Bytes::from(std::mem::replace(buf, next)));
+        }
+    }
+}
+
+/// Quote `body`, which is not valid UTF-8, as `push_quoted` would quote its
+/// `String::from_utf8_lossy`, but one window at a time: the whole lossy copy
+/// is never held. Valid spans of at least [`ZERO_COPY_MIN`] bytes between
+/// quotes are shared with `body`.
+fn push_lossy_quoted(body: &Bytes, chunks: &mut Vec<Bytes>) {
+    let mut buf = Vec::with_capacity(WINDOW.min(body.len() + 16));
+    put_windowed(&mut buf, chunks, b"'");
+    let mut offset = 0;
+    for part in body.utf8_chunks() {
+        let valid = part.valid();
+        let base = offset;
+        for_each_span(valid, |span, quoted| {
+            if span.len() >= ZERO_COPY_MIN {
+                if !buf.is_empty() {
+                    chunks.push(Bytes::from(std::mem::take(&mut buf)));
+                }
+                chunks.push(body.slice(base + span.start..base + span.end));
+                buf = Vec::with_capacity(WINDOW);
+            } else {
+                put_windowed(&mut buf, chunks, &valid.as_bytes()[span]);
+            }
+            if quoted {
+                put_windowed(&mut buf, chunks, QUOTE_ESCAPE);
+            }
+        });
+        offset += valid.len();
+        if !part.invalid().is_empty() {
+            put_windowed(&mut buf, chunks, "\u{FFFD}".as_bytes());
+            offset += part.invalid().len();
+        }
+    }
+    put_windowed(&mut buf, chunks, b"'");
+    if !buf.is_empty() {
+        buf.shrink_to_fit();
+        chunks.push(Bytes::from(buf));
+    }
+}
+
+/// Render a response body for the log.
+///
+/// Pretty-printed when it is valid JSON (so FHIR `OperationOutcome`/`Bundle`
+/// job results are readable), otherwise the raw bytes as a lossy UTF-8 string.
+/// Not used for what is stored.
 #[must_use]
 pub fn pretty_body(body: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(body)
@@ -252,9 +313,59 @@ pub fn pretty_body(body: &[u8]) -> String {
         .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned())
 }
 
+/// The most a body is parsed and pretty-printed for the log.
+const PRETTY_MAX: usize = 256 * 1024;
+
+/// A response body as it is logged: valid JSON of at most `PRETTY_MAX` bytes
+/// pretty-printed, other valid UTF-8 as is, anything else as a size.
+pub(crate) fn log_body(body: &[u8]) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match std::str::from_utf8(body) {
+        Ok(_) if body.len() <= PRETTY_MAX => Cow::Owned(pretty_body(body)),
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(format!("<{} bytes, not UTF-8>", body.len())),
+    }
+}
+
+/// The response head as a record: the status line, the headers (a credential
+/// header and every `set-cookie` value as [`REDACTED`]), a blank line and
+/// `tail`.
+pub(crate) fn head_record(
+    version: reqwest::Version,
+    status: reqwest::StatusCode,
+    headers: &HeaderMap,
+    tail: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(64 + tail.len() + headers.len() * 48);
+    let _ = writeln!(out, "{version:?} {status}");
+    for (name, value) in headers {
+        out.push_str(name.as_str());
+        out.push_str(": ");
+        if name == SET_COOKIE || is_credential(name, value) {
+            out.push_str(REDACTED);
+        } else {
+            out.push_str(&String::from_utf8_lossy(value.as_bytes()));
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(tail);
+    out.push('\n');
+    out
+}
+
+/// What the head-only record says of the body: its length, when known.
+pub(crate) fn not_audited_note(content_length: Option<u64>) -> String {
+    content_length.map_or_else(
+        || "[body not audited: unknown length]".to_owned(),
+        |n| format!("[body not audited: content-length {n}]"),
+    )
+}
+
 pub(crate) fn build_curl(req: &HttpRequest, cookies: Option<&str>) -> String {
     request_to_curl(
-        &req.url,
+        req.url.as_str(),
         req.method,
         &req.headers,
         req.body.as_deref(),
@@ -262,8 +373,7 @@ pub(crate) fn build_curl(req: &HttpRequest, cookies: Option<&str>) -> String {
     )
 }
 
-pub(crate) fn cookie_header_for(jar: &CookieJar, url: &str) -> Option<String> {
-    let parsed = Url::parse(url).ok()?;
-    let header = jar.cookie_header(&parsed)?;
+pub(crate) fn cookie_header_for(jar: &CookieJar, url: &Url) -> Option<String> {
+    let header = jar.cookie_header(url)?;
     header.to_str().ok().map(str::to_owned)
 }

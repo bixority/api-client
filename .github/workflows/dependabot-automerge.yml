@@ -30,7 +30,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run unit tests
-        run: cargo test --all --locked --verbose
+        run: cargo test --verbose
+
+      - name: Run unit tests with audit
+        run: cargo test --features audit --lib --verbose
 
   merge:
     name: Approve and merge

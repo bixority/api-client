@@ -114,7 +114,7 @@ fn curl_body_with_single_quotes_is_escaped() {
 }
 
 #[test]
-fn curl_non_utf8_body_is_lossy() {
+fn curl_non_utf8_body_is_a_note_in_the_log_line() {
     let curl = request_to_curl(
         "https://example.com",
         Method::Put,
@@ -122,7 +122,10 @@ fn curl_non_utf8_body_is_lossy() {
         Some(&[b'a', 0xff, b'b']),
         None,
     );
-    assert_eq!(curl, "curl -i -X PUT https://example.com -d 'a\u{fffd}b'");
+    assert_eq!(
+        curl,
+        "curl -i -X PUT https://example.com -d '<3 bytes, not UTF-8>'"
+    );
 }
 
 fn joined(chunks: &[Bytes]) -> Vec<u8> {
@@ -173,11 +176,16 @@ fn curl_chunks_concatenate_to_request_to_curl() {
         for cookies in [None, Some("session=1; x=it's")] {
             for body in &bodies {
                 let bytes = body.clone().map(Bytes::from);
+                // The stored line keeps a non-UTF-8 body, lossily converted;
+                // the log line shows its size instead.
+                let lossy = body
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned());
                 let expected = request_to_curl(
                     "https://example.com/a b",
                     Method::Post,
                     hdrs,
-                    bytes.as_deref(),
+                    lossy.as_deref().map(str::as_bytes),
                     cookies,
                 );
                 let chunks = request_to_curl_chunks(
@@ -247,4 +255,80 @@ fn curl_chunks_safe_body_is_one_shared_piece() {
     );
     assert_eq!(chunks.len(), 2, "{chunks:?}");
     assert_eq!(chunks[1].as_ptr(), body.as_ptr());
+}
+
+/// The old rendering of a body that is not valid UTF-8: one lossy `String`.
+fn lossy_reference(body: &[u8]) -> String {
+    request_to_curl(
+        "https://example.com",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(String::from_utf8_lossy(body).as_bytes()),
+        None,
+    )
+}
+
+#[test]
+fn curl_chunks_of_binary_bodies_match_the_lossy_reference() {
+    const WINDOW: usize = 64 * 1024;
+    let mut bodies: Vec<Vec<u8>> = vec![
+        vec![0xff],
+        vec![b'a', 0xff, b'b'],
+        vec![0xff, b'\'', 0xfe, b'\'', 0xc0],
+        vec![0xe2, 0x82], // a truncated euro sign
+        "z\u{142}'\u{20ac}".bytes().chain([0xf0, 0x9f]).collect(),
+    ];
+    // Invalid bytes and quotes on and around every window edge.
+    for edge in [WINDOW - 4, WINDOW - 3, WINDOW - 1, WINDOW, WINDOW + 1] {
+        for fill in [&b"x"[..], &b"'"[..], "\u{20ac}".as_bytes()] {
+            let mut body: Vec<u8> = fill.iter().copied().cycle().take(edge).collect();
+            body.extend_from_slice(&[0xff, b'\'', 0xfe]);
+            body.extend(fill.iter().copied().cycle().take(100));
+            bodies.push(body);
+        }
+    }
+    // Several MiB, with long valid spans (shared with the body) between
+    // invalid bytes and a quote-dense stretch.
+    let mut big = Vec::new();
+    for i in 0..6 {
+        big.extend(std::iter::repeat_n(b'a', 700_000 + i));
+        big.push(0xff);
+        big.extend("it's 'q' ".repeat(20_000).bytes());
+        big.push(0xc3);
+    }
+    bodies.push(big);
+
+    for body in bodies {
+        assert!(std::str::from_utf8(&body).is_err());
+        let bytes = Bytes::from(body.clone());
+        let chunks = request_to_curl_chunks(
+            "https://example.com",
+            Method::Post,
+            &HeaderMap::new(),
+            Some(&bytes),
+            None,
+        );
+        assert!(
+            joined(&chunks) == lossy_reference(&body).as_bytes(),
+            "mismatch for a body of {} bytes",
+            body.len()
+        );
+    }
+}
+
+#[test]
+fn curl_chunks_of_a_binary_body_are_windows() {
+    let mut body = vec![0xffu8];
+    body.extend(std::iter::repeat_n(b'\'', 200_000));
+    let bytes = Bytes::from(body);
+    let chunks = request_to_curl_chunks(
+        "https://example.com",
+        Method::Post,
+        &HeaderMap::new(),
+        Some(&bytes),
+        None,
+    );
+    // Quoted body 800 KB: far more than the head and a few pieces, none above a window.
+    assert!(chunks.len() > 10, "{}", chunks.len());
+    assert!(chunks.iter().skip(1).all(|c| c.len() <= 64 * 1024));
 }

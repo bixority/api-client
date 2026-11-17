@@ -6,6 +6,9 @@
 //! `ObjectStorageAuditor` swallows store errors, so only reading back proves a
 //! record was written.
 
+#![allow(deprecated)]
+#![allow(clippy::significant_drop_tightening)]
+
 mod harness;
 
 use api_client::{APIClient, AuditConfig, Headers, Method};

@@ -32,8 +32,8 @@ impl Headers {
         self.insert("authorization", &format!("Bearer {token}"))
     }
 
-    pub(crate) fn into_inner(self) -> HeaderMap {
-        self.inner
+    pub(crate) const fn as_map(&self) -> &HeaderMap {
+        &self.inner
     }
 
     #[must_use]

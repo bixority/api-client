@@ -1,14 +1,13 @@
 use crate::APIClient;
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 use crate::types::{AuditConfig, Headers, Method};
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 use futures::FutureExt;
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 use mockall::predicate;
-use std::collections::HashMap;
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 use std::sync::Arc;
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[test]
@@ -19,23 +18,24 @@ fn test_build_url() -> Result<(), crate::APIClientError> {
         .build()?;
 
     // Test basic URL building
-    let url = client.build_url("test", None)?;
-    assert_eq!(url, "https://api.example.com/test");
+    let url = client.build_url("test", &[])?;
+    assert_eq!(url.as_str(), "https://api.example.com/test");
 
     // Test with leading/trailing slashes
-    let url = client.build_url("/test/", None)?;
-    assert_eq!(url, "https://api.example.com/test/");
+    let url = client.build_url("/test/", &[])?;
+    assert_eq!(url.as_str(), "https://api.example.com/test/");
 
     // Test with query parameters
-    let mut params = HashMap::new();
-    params.insert("key".to_string(), "value".to_string());
-    params.insert("foo".to_string(), "bar".to_string());
+    let params = vec![
+        ("key".to_string(), "value".to_string()),
+        ("foo".to_string(), "bar".to_string()),
+    ];
 
-    let url = client.build_url("search", Some(&params))?;
-    // Order of query params might not be guaranteed, so we check for both
-    assert!(url.contains("key=value"));
-    assert!(url.contains("foo=bar"));
-    assert!(url.starts_with("https://api.example.com/search?"));
+    let url = client.build_url("search", &params)?;
+    assert_eq!(
+        url.as_str(),
+        "https://api.example.com/search?key=value&foo=bar"
+    );
 
     Ok(())
 }
@@ -83,7 +83,7 @@ fn test_client_clear_cookies() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 #[tokio::test]
 async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
     let _client = APIClient::new("https://api.example.com".to_string()).build()?;
@@ -101,7 +101,7 @@ async fn test_request_with_audit_config() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
-#[cfg(not(feature = "audit"))]
+#[cfg(not(feature = "audit-core"))]
 #[tokio::test]
 async fn test_request_without_audit() -> Result<(), crate::APIClientError> {
     use crate::types::{Headers, Method};
@@ -158,7 +158,7 @@ async fn test_request_json_compilation() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 mockall::mock! {
     pub Auditor {}
     impl crate::audit::Auditor for Auditor {
@@ -170,7 +170,7 @@ mockall::mock! {
     }
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 #[tokio::test]
 async fn test_client_with_auditor() -> Result<(), crate::APIClientError> {
     let mut mock_auditor = MockAuditor::new();
@@ -240,7 +240,7 @@ async fn test_client_with_auditor() -> Result<(), crate::APIClientError> {
     Ok(())
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 #[tokio::test]
 async fn test_client_with_auditor_and_root_path() -> Result<(), crate::APIClientError> {
     let mut mock_auditor = MockAuditor::new();
@@ -311,7 +311,7 @@ async fn test_client_with_auditor_and_root_path() -> Result<(), crate::APIClient
     Ok(())
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 #[tokio::test]
 async fn default_write_audit_chunks_delivers_the_curl_bytes() {
     use crate::audit::{Auditor, request_to_curl, request_to_curl_chunks};
@@ -364,11 +364,10 @@ async fn default_write_audit_chunks_delivers_the_curl_bytes() {
     assert_eq!(got[0].1, expected.into_bytes());
 }
 
-#[cfg(feature = "audit")]
+#[cfg(feature = "audit-core")]
 mod response_audit {
     use super::*;
-    use crate::audit::{Auditor, pretty_body};
-    use bytes::Bytes;
+    use crate::audit::Auditor;
     use futures::future::BoxFuture;
     use std::sync::Mutex;
 
@@ -464,12 +463,27 @@ mod response_audit {
     }
 
     #[tokio::test]
-    async fn response_of_pretty_max_is_audited_pretty() {
+    async fn response_of_pretty_max_is_audited_as_received() {
         let body = json_of_len(PRETTY_MAX);
         let (got, stored) = run(body.clone(), false).await;
         assert_eq!(got, body);
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0], pretty_body(&Bytes::from(body)).into_bytes());
+        assert_eq!(stored, vec![body]);
+    }
+
+    #[tokio::test]
+    async fn small_json_response_is_audited_as_received() {
+        let body = br#"{"b":1,"a":[true,null]}"#.to_vec();
+        let (got, stored) = run(body.clone(), false).await;
+        assert_eq!(got, body);
+        assert_eq!(stored, vec![body]);
+    }
+
+    #[tokio::test]
+    async fn small_non_utf8_response_is_audited_as_received() {
+        let body = vec![b'a', 0xff, 0xfe, b'\'', 0x00, b'z'];
+        let (got, stored) = run(body.clone(), false).await;
+        assert_eq!(got, body);
+        assert_eq!(stored, vec![body]);
     }
 
     #[tokio::test]

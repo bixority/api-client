@@ -1,4 +1,6 @@
-use api_client::{APIClient, APIClientError, AuditConfig, Auditor, Headers, Method};
+#![allow(clippy::significant_drop_tightening)]
+
+use api_client::{APIClient, APIClientError, AuditConfig, Auditor};
 use futures::future::{BoxFuture, FutureExt};
 use std::sync::Arc;
 
@@ -37,41 +39,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Sending audited request to httpbin.org...\n");
 
-    // 2. Prepare headers
-    let headers = Headers::new().content_type("application/json");
-
-    // 3. Define per-request audit configuration
+    // 2. Define per-request audit configuration
     let audit_config = AuditConfig::new("example-audit");
 
-    // 4. Execute the request
+    // 3. Execute the request
     // This will trigger the ConsoleAuditor twice: once for the request and once for the response.
     let response = client
-        .request(
-            "/post",
-            Method::Post,
-            headers,
-            Some(b"{\"message\": \"Hello, Audit!\"}".to_vec()),
-            None,
-            Some(audit_config),
-        )
+        .post("/post")
+        .header("content-type", "application/json")
+        .body(r#"{"message": "Hello, Audit!"}"#)
+        .audit(audit_config)
+        .send()
         .await?;
 
     println!("Request finished with status: {}", response.status());
 
-    // 5. Muted response body example (useful for streaming or large payloads)
+    // 4. Muted response body example (useful for streaming or large payloads)
     println!("\nSending another request with muted response body audit...");
     let muted_audit = AuditConfig::new("muted-audit").mute_response();
 
-    let _ = client
-        .request(
-            "/get",
-            Method::Get,
-            Headers::new(),
-            None,
-            None,
-            Some(muted_audit),
-        )
-        .await?;
+    let _ = client.get("/get").audit(muted_audit).send().await?;
 
     Ok(())
 }

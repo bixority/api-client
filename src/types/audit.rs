@@ -11,6 +11,9 @@ pub struct AuditConfig {
     pub path: Option<String>,
     /// Whether to audit the response body. If false, the response can be streamed.
     pub audit_response_body: bool,
+    /// Whether a response body that is too large to buffer is stored while the
+    /// caller streams it. See [`Self::tee_response`].
+    pub tee_response: bool,
 }
 
 impl AuditConfig {
@@ -23,6 +26,7 @@ impl AuditConfig {
             name: Some(name.into()),
             path: std::env::var("API_CLIENT_AUDIT_PATH").ok(),
             audit_response_body: true,
+            tee_response: false,
         }
     }
 
@@ -47,6 +51,21 @@ impl AuditConfig {
         self
     }
 
+    /// Store a response body that is too large to buffer (longer than the
+    /// client's `audit_body_limit`, or of unknown length such as a chunked or
+    /// decompressed one) as the caller streams it, instead of a head-only
+    /// record. The body goes to the auditor through a bounded channel of 8
+    /// chunks, so a slow auditor slows the caller. If the body ends early (the
+    /// caller drops it, or it fails), nothing is stored under `response`; a
+    /// `response_partial` record notes how much was seen. Use
+    /// [`APIClient::flush_audit`](crate::APIClient::flush_audit) to wait for the
+    /// writes before a shutdown.
+    #[must_use]
+    pub const fn tee_response(mut self) -> Self {
+        self.tee_response = true;
+        self
+    }
+
     /// Disable auditing of the response body, allowing it to be streamed.
     #[must_use]
     pub const fn mute_response(mut self) -> Self {
@@ -61,9 +80,14 @@ impl Default for AuditConfig {
             name: None,
             path: std::env::var("API_CLIENT_AUDIT_PATH").ok(),
             audit_response_body: true,
+            tee_response: false,
         }
     }
 }
+
+/// Hex digits of the request id: the tail of a random UUID, the same digits
+/// that end its hyphenated form (its last group).
+const REQUEST_ID_LEN: usize = 12;
 
 /// Metadata for auditing a request/response pair.
 #[derive(Clone, Debug)]
@@ -80,8 +104,9 @@ impl AuditMetadata {
     #[must_use]
     pub fn new(audit_name: &str, uri: &str) -> Self {
         let now = Utc::now();
-        let request_id = Uuid::new_v4().to_string();
-        let request_id = request_id[24..].to_owned();
+        let mut buf = Uuid::encode_buffer();
+        let hex = Uuid::new_v4().simple().encode_lower(&mut buf);
+        let request_id = hex[hex.len() - REQUEST_ID_LEN..].to_owned();
 
         Self {
             root_path: None,
@@ -101,33 +126,41 @@ impl AuditMetadata {
 
     #[must_use]
     pub fn path(&self, method: Method, suffix: &str) -> String {
+        use std::fmt::Write as _;
+
+        let root = self
+            .root_path
+            .as_deref()
+            .map(|r| r.trim_matches('/'))
+            .filter(|r| !r.is_empty());
+        let cap = root.map_or(0, |r| r.len() + 1)
+            + self.date_path.len()
+            + self.audit_name.len()
+            + self.uri_path.len()
+            + self.timestamp.len()
+            + self.request_id.len()
+            + suffix.len()
+            + 32;
+        let mut out = String::with_capacity(cap);
+        if let Some(root) = root {
+            out.push_str(root);
+            out.push('/');
+        }
+        out.push_str(&self.date_path);
+        out.push('/');
+        out.push_str(&self.audit_name);
+        out.push('/');
         // Empty URI segments (a request to `/`) are skipped: an empty object
         // path segment is refused by the object storage client.
-        let uri_segments = self
-            .uri_path
-            .split('/')
-            .filter(|segment| !segment.is_empty());
-        let mut dirs = vec![self.date_path.as_str(), self.audit_name.as_str()];
-        dirs.extend(uri_segments);
-        let file_path = format!(
-            "{}/{}_{}_{}_{}.txt",
-            dirs.join("/"),
-            method,
-            self.timestamp,
-            self.request_id,
-            suffix
-        );
-
-        match &self.root_path {
-            Some(root) => {
-                let trimmed = root.trim_matches('/');
-                if trimmed.is_empty() {
-                    file_path
-                } else {
-                    format!("{trimmed}/{file_path}")
-                }
-            }
-            None => file_path,
+        for segment in self.uri_path.split('/').filter(|s| !s.is_empty()) {
+            out.push_str(segment);
+            out.push('/');
         }
+        let _ = write!(
+            out,
+            "{method}_{}_{}_{suffix}.txt",
+            self.timestamp, self.request_id
+        );
+        out
     }
 }
