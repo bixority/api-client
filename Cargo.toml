@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.2.0"
+version = "0.2.1"
 
 [lib]
 name = "api_client"
@@ -26,7 +26,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.54", features = ["sync", "time", "rt"] }
-tower = { version = "0.5.2", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 url = "2.5"
 uuid = { version = "1.29", features = ["v4"], optional = true }
