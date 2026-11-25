@@ -1,6 +1,6 @@
 [package]
 authors = ["Olegs Korsaks <olegs.korsaks@bixority.com>"]
-categories = ["api-client"]
+categories = ["web-programming::http-client"]
 description = "API client"
 rust-version = "1.100"
 edition = "2024"
@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 name = "api-client"
 readme = "README.md"
 repository = "https://github.com/bixority/api-client"
-version = "0.2.1"
+version = "0.2.2"
 
 [lib]
 name = "api_client"
@@ -34,7 +34,7 @@ uuid = { version = "1.29", features = ["v4"], optional = true }
 [dev-dependencies]
 # The Azurite integration test writes the audit log to `az://`, a backend that
 # `audit` does not link.
-object-storage-client = { version = "0.4.13", registry = "bixority-codeberg", default-features = false, features = ["azure"] }
+object-storage-client = { version = "0.4.15", registry = "bixority-codeberg", default-features = false, features = ["azure"] }
 mockall = "0.15"
 predicates = { version = "3.1", features = ["regex"] }
 rcgen = "0.14"
